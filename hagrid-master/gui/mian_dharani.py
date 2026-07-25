@@ -153,6 +153,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # so that _create_logs_page can reference it safely
         self._activity_logger = ActivityLogger()
 
+        # Load registered operators database
+        self._operators: List[dict] = []
+        self._load_operators()
+
         # Setup UI
         self._build_ui()
         self._build_menu()
@@ -1760,36 +1764,223 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.information(self, "Success", "SOP configuration updated successfully and monitor restarted.")
 
     # -- PAGE 3: OPERATOR MANAGEMENT -----------------------------------------
+    def _load_operators(self) -> None:
+        import json
+        path = os.path.join(_GUI_DIR, "operators.json")
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    self._operators = json.load(f)
+            except Exception as e:
+                print(f"[MainWindow] Error loading operators.json: {e}")
+                self._operators = []
+        if not self._operators:
+            self._operators = [
+                {
+                    "id": "EMP001",
+                    "name": "Dharanidharan",
+                    "rfid": "RFID-88392-X",
+                    "shift": "Shift A (06:00 - 14:00)",
+                    "role": "Primary Operator",
+                    "supervisor": "Giri",
+                    "line": "Assembly Line A",
+                    "attendance": "Present",
+                    "is_active": True,
+                    "login_time": "06:01:22",
+                    "working_duration": "04:18:23",
+                    "break_duration": "00:15:00",
+                    "total_processed": 142,
+                    "sop_compliance": "97.2%",
+                    "avg_cycle_time": "12.5 s"
+                },
+                {
+                    "id": "EMP002",
+                    "name": "Sarah Smith",
+                    "rfid": "RFID-44120-B",
+                    "shift": "Shift A (06:00 - 14:00)",
+                    "role": "Assembly Lead",
+                    "supervisor": "Giri",
+                    "line": "Assembly Line B",
+                    "attendance": "Present",
+                    "is_active": False,
+                    "login_time": "06:15:00",
+                    "working_duration": "03:45:10",
+                    "break_duration": "00:10:00",
+                    "total_processed": 128,
+                    "sop_compliance": "98.5%",
+                    "avg_cycle_time": "11.8 s"
+                },
+                {
+                    "id": "EMP003",
+                    "name": "Rajesh Kumar",
+                    "rfid": "RFID-99231-C",
+                    "shift": "Shift B (14:00 - 22:00)",
+                    "role": "Quality Inspector",
+                    "supervisor": "Giri",
+                    "line": "Testing Line 1",
+                    "attendance": "Absent",
+                    "is_active": False,
+                    "login_time": "--:--:--",
+                    "working_duration": "00:00:00",
+                    "break_duration": "00:00:00",
+                    "total_processed": 0,
+                    "sop_compliance": "100.0%",
+                    "avg_cycle_time": "0.0 s"
+                }
+            ]
+            self._save_operators()
+
+    def _save_operators(self) -> None:
+        import json
+        path = os.path.join(_GUI_DIR, "operators.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._operators, f, indent=2)
+        except Exception as e:
+            print(f"[MainWindow] Error saving operators.json: {e}")
+
     def _create_operator_page(self) -> None:
         page = QtWidgets.QWidget()
         page.setObjectName("page")
         self.stacked_widget.addWidget(page)
+
+        # Outer layout holds only the scroll area (no margins)
+        outer_layout = QtWidgets.QVBoxLayout(page)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        # ── Scroll Area (vertical + horizontal) ─────────────────────────────
+        scroll_area = QtWidgets.QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            /* Vertical scrollbar (right side) */
+            QScrollBar:vertical {
+                background: #f1f5f9;
+                width: 10px;
+                margin: 0px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background: #94a3b8;
+                min-height: 32px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #64748b;
+            }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            /* Horizontal scrollbar (bottom) */
+            QScrollBar:horizontal {
+                background: #f1f5f9;
+                height: 10px;
+                margin: 0px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #94a3b8;
+                min-width: 32px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: #64748b;
+            }
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal {
+                width: 0px;
+            }
+        """)
+
+        # Inner scroll-content widget  (min-width forces horizontal scrollbar when window is narrow)
+        scroll_content = QtWidgets.QWidget()
+        scroll_content.setObjectName("page")
+        scroll_content.setMinimumWidth(1050)
+        scroll_area.setWidget(scroll_content)
+        outer_layout.addWidget(scroll_area)
+
+        main_layout = QtWidgets.QVBoxLayout(scroll_content)
+        main_layout.setContentsMargins(24, 20, 24, 20)
+        main_layout.setSpacing(16)
         
-        layout = QtWidgets.QVBoxLayout(page)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+        # 1. Header & Summary Metrics Bar
+        header_row = QtWidgets.QHBoxLayout()
+        header_row.setSpacing(12)
         
-        title = QtWidgets.QLabel("Operator Management & Authentications")
+        title_box = QtWidgets.QVBoxLayout()
+        title = QtWidgets.QLabel("Operator Management & Shift Authentications")
         title.setStyleSheet("font-size: 22px; font-weight: 800; color: #0f172a;")
-        layout.addWidget(title)
+        sub = QtWidgets.QLabel("Add, update, track attendance (Present/Absent), and set active working operators for live shift monitoring.")
+        sub.setStyleSheet("color: #64748b; font-size: 12px;")
+        title_box.addWidget(title)
+        title_box.addWidget(sub)
+        header_row.addLayout(title_box, 1)
         
+        # Summary Metric Badges
+        self.op_badge_total = QtWidgets.QLabel("Total: 0")
+        self.op_badge_present = QtWidgets.QLabel("Present: 0")
+        self.op_badge_absent = QtWidgets.QLabel("Absent: 0")
+        self.op_badge_active = QtWidgets.QLabel("Active: --")
+        
+        for badge, bg, fg in [
+            (self.op_badge_total, "#f1f5f9", "#334155"),
+            (self.op_badge_present, "#dcfce7", "#15803d"),
+            (self.op_badge_absent, "#fee2e2", "#b91c1c"),
+            (self.op_badge_active, "#dbeafe", "#1d4ed8")
+        ]:
+            badge.setFixedHeight(26)
+            badge.setStyleSheet(f"""
+                background-color: {bg};
+                color: {fg};
+                font-weight: 700;
+                font-size: 11px;
+                padding: 0px 10px;
+                border-radius: 13px;
+                border: 1px solid {fg}40;
+            """)
+            header_row.addWidget(badge)
+            
+        main_layout.addLayout(header_row)
+        
+        # 2. Form & Active Card Split View
         split = QtWidgets.QHBoxLayout()
         split.setSpacing(16)
         
-        # Profile Details / Form
+        # Profile Details / Form Card
         form_card = QtWidgets.QFrame()
         form_card.setObjectName("card")
+        form_card.setStyleSheet("""
+            QFrame#card {
+                background-color: #ffffff;
+                border: 1px solid #e2e8f0;
+                border-radius: 10px;
+            }
+        """)
         form_layout = QtWidgets.QFormLayout(form_card)
-        form_layout.setContentsMargins(20, 20, 20, 20)
-        form_layout.setSpacing(12)
+        form_layout.setContentsMargins(20, 18, 20, 18)
+        form_layout.setSpacing(10)
+        
+        form_title = QtWidgets.QLabel("Add / Edit Employee Details")
+        form_title.setStyleSheet("font-size: 15px; font-weight: 700; color: #0f172a; margin-bottom: 6px;")
+        form_layout.addRow(form_title)
         
         self.op_id_input = QtWidgets.QLineEdit(self.default_worker_id)
+        self.op_id_input.setPlaceholderText("e.g. EMP001")
         form_layout.addRow(QtWidgets.QLabel("Employee ID:"), self.op_id_input)
         
-        self.op_name_input = QtWidgets.QLineEdit("John Doe")
+        self.op_name_input = QtWidgets.QLineEdit("Dharanidharan")
+        self.op_name_input.setPlaceholderText("e.g. Dharanidharan")
         form_layout.addRow(QtWidgets.QLabel("Operator Name:"), self.op_name_input)
         
         self.op_rfid_input = QtWidgets.QLineEdit("RFID-88392-X")
+        self.op_rfid_input.setPlaceholderText("e.g. RFID-88392-X")
         form_layout.addRow(QtWidgets.QLabel("RFID / Barcode ID:"), self.op_rfid_input)
         
         self.op_shift_comb = QtWidgets.QComboBox()
@@ -1800,29 +1991,82 @@ class MainWindow(QtWidgets.QMainWindow):
         self.op_role_comb.addItems(["Primary Operator", "Assembly Lead", "Quality Inspector", "Supervisor"])
         form_layout.addRow(QtWidgets.QLabel("Shift Role:"), self.op_role_comb)
         
-        self.op_super_input = QtWidgets.QLineEdit("Sarah Smith")
+        self.op_super_input = QtWidgets.QLineEdit("Giri")
+        self.op_super_input.setPlaceholderText("e.g. Sarah Smith / Giri")
         form_layout.addRow(QtWidgets.QLabel("Supervisor:"), self.op_super_input)
         
         self.op_line_input = QtWidgets.QLineEdit("Assembly Line A")
+        self.op_line_input.setPlaceholderText("e.g. Assembly Line A")
         form_layout.addRow(QtWidgets.QLabel("Workstation / Line:"), self.op_line_input)
         
+        self.op_attend_comb = QtWidgets.QComboBox()
+        self.op_attend_comb.addItems(["Present", "Absent"])
+        form_layout.addRow(QtWidgets.QLabel("Attendance Status:"), self.op_attend_comb)
+        
+        # Form Buttons
+        btn_box = QtWidgets.QHBoxLayout()
+        btn_box.setSpacing(10)
+        
+        save_op_btn = QtWidgets.QPushButton("Save / Add Employee")
+        save_op_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        save_op_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2563eb; color: #ffffff; font-weight: 700;
+                padding: 8px 16px; border-radius: 6px; border: none;
+            }
+            QPushButton:hover { background-color: #1d4ed8; }
+        """)
+        save_op_btn.clicked.connect(self._save_operator_details)
+        btn_box.addWidget(save_op_btn)
+        
+        clear_op_btn = QtWidgets.QPushButton("Reset Form")
+        clear_op_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        clear_op_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f1f5f9; color: #475569; font-weight: 600;
+                padding: 8px 14px; border-radius: 6px; border: 1px solid #cbd5e1;
+            }
+            QPushButton:hover { background-color: #e2e8f0; }
+        """)
+        clear_op_btn.clicked.connect(self._clear_operator_fields)
+        btn_box.addWidget(clear_op_btn)
+        
+        set_active_form_btn = QtWidgets.QPushButton("Set Active Shift Worker")
+        set_active_form_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        set_active_form_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #16a34a; color: #ffffff; font-weight: 700;
+                padding: 8px 14px; border-radius: 6px; border: none;
+            }
+            QPushButton:hover { background-color: #15803d; }
+        """)
+        set_active_form_btn.clicked.connect(self._set_form_operator_active)
+        btn_box.addWidget(set_active_form_btn)
+        
+        form_layout.addRow(btn_box)
         split.addWidget(form_card, 3)
         
-        # Photo and attendance card
+        # Active Operator Profile Card (Right)
         perf_card = QtWidgets.QFrame()
         perf_card.setObjectName("card")
+        perf_card.setStyleSheet("""
+            QFrame#card {
+                background-color: #ffffff;
+                border: 1px solid #e2e8f0;
+                border-radius: 10px;
+            }
+        """)
         perf_layout = QtWidgets.QVBoxLayout(perf_card)
-        perf_layout.setContentsMargins(20, 20, 20, 20)
-        perf_layout.setSpacing(10)
+        perf_layout.setContentsMargins(20, 18, 20, 18)
+        perf_layout.setSpacing(8)
         
-        avatar_lbl = QtWidgets.QLabel("")
-        avatar_lbl.setStyleSheet("font-size: 64px; background-color: transparent;")
-        avatar_lbl.setAlignment(Qt.AlignCenter)
-        perf_layout.addWidget(avatar_lbl)
+        card_header = QtWidgets.QLabel("Active Working Operator (Current Shift)")
+        card_header.setStyleSheet("font-size: 14px; font-weight: 700; color: #2563eb;")
+        perf_layout.addWidget(card_header)
         
-        self.perf_name_lbl = QtWidgets.QLabel("John Doe (Active)")
-        self.perf_name_lbl.setStyleSheet("font-weight: 700; font-size: 15px; color: #0f172a;")
-        self.perf_name_lbl.setAlignment(Qt.AlignCenter)
+        self.perf_name_lbl = QtWidgets.QLabel("Dharanidharan (Active)")
+        self.perf_name_lbl.setStyleSheet("font-weight: 800; font-size: 16px; color: #0f172a;")
+        self.perf_name_lbl.setAlignment(QtCore.Qt.AlignCenter)
         perf_layout.addWidget(self.perf_name_lbl)
         
         # Details list
@@ -1834,9 +2078,9 @@ class MainWindow(QtWidgets.QMainWindow):
             lbl.setStyleSheet("color: #475569; font-size: 12px; font-weight: 500;")
             perf_layout.addWidget(lbl)
             
-        perf_layout.addSpacing(10)
+        perf_layout.addSpacing(6)
         perf_title = QtWidgets.QLabel("Operator KPIs Summary")
-        perf_title.setStyleSheet("font-size: 13px; font-weight: 700; color: #2563eb;")
+        perf_title.setStyleSheet("font-size: 13px; font-weight: 700; color: #0f172a; border-top: 1px solid #e2e8f0; padding-top: 8px;")
         perf_layout.addWidget(perf_title)
         
         self.op_stat_prod = QtWidgets.QLabel("Total Processed: 142 units")
@@ -1849,41 +2093,435 @@ class MainWindow(QtWidgets.QMainWindow):
             
         perf_layout.addStretch(1)
         split.addWidget(perf_card, 2)
-        layout.addLayout(split)
+        main_layout.addLayout(split)
         
-        # Action Buttons
-        btn_layout = QtWidgets.QHBoxLayout()
-        save_op_btn = QtWidgets.QPushButton("Update Operator Profile")
-        save_op_btn.setObjectName("primaryBtn")
-        save_op_btn.clicked.connect(self._save_operator_details)
+        # 3. Bottom Section: Registered Employee List CRUD Table
+        table_container = QtWidgets.QFrame()
+        table_container.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #e2e8f0;
+                border-radius: 10px;
+            }
+        """)
+        tbl_layout = QtWidgets.QVBoxLayout(table_container)
+        tbl_layout.setContentsMargins(16, 14, 16, 14)
+        tbl_layout.setSpacing(10)
         
-        clear_op_btn = QtWidgets.QPushButton("Reset Fields")
-        clear_op_btn.setObjectName("secondaryBtn")
-        clear_op_btn.clicked.connect(self._clear_operator_fields)
+        tbl_header_row = QtWidgets.QHBoxLayout()
+        tbl_title = QtWidgets.QLabel("Registered Employee List & Shift Assignment (CRUD)")
+        tbl_title.setStyleSheet("font-size: 15px; font-weight: 700; color: #0f172a;")
+        tbl_header_row.addWidget(tbl_title)
+        tbl_header_row.addStretch(1)
         
-        btn_layout.addWidget(save_op_btn)
-        btn_layout.addWidget(clear_op_btn)
-        btn_layout.addStretch(1)
-        layout.addLayout(btn_layout)
-        layout.addStretch(1)
+        # Search input
+        self.op_search_input = QtWidgets.QLineEdit()
+        self.op_search_input.setPlaceholderText("Search by Employee ID or Name...")
+        self.op_search_input.setFixedWidth(260)
+        self.op_search_input.setStyleSheet("padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px;")
+        self.op_search_input.textChanged.connect(self._refresh_operator_table)
+        tbl_header_row.addWidget(self.op_search_input)
+        
+        tbl_layout.addLayout(tbl_header_row)
+        
+        # Table Widget
+        self.op_table = QtWidgets.QTableWidget()
+        headers = ["Emp ID", "Operator Name", "RFID ID", "Shift", "Role", "Workstation", "Attendance", "Shift Work Status", "Actions"]
+        self.op_table.setColumnCount(len(headers))
+        self.op_table.setHorizontalHeaderLabels(headers)
+        # Stretch ALL columns proportionally so they fill the full table width
+        hdr = self.op_table.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        # Override fixed-size columns that should stay compact
+        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)   # Emp ID
+        self.op_table.setColumnWidth(0, 90)
+        hdr.setSectionResizeMode(6, QtWidgets.QHeaderView.Fixed)   # Attendance
+        self.op_table.setColumnWidth(6, 110)
+        hdr.setSectionResizeMode(7, QtWidgets.QHeaderView.Fixed)   # Shift Work Status
+        self.op_table.setColumnWidth(7, 155)
+        hdr.setSectionResizeMode(8, QtWidgets.QHeaderView.Fixed)   # Actions
+        self.op_table.setColumnWidth(8, 155)
+        self.op_table.verticalHeader().setVisible(False)
+        self.op_table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.op_table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.op_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.op_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.op_table.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Expanding
+        )
+        self.op_table.setMinimumHeight(200)
+        self.op_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #ffffff;
+                gridline-color: #f1f5f9;
+                border: none;
+                font-size: 12px;
+                outline: none;
+            }
+            QTableWidget::item {
+                padding: 4px 8px;
+                border-bottom: 1px solid #f1f5f9;
+            }
+            QTableWidget::item:selected {
+                background-color: #eff6ff;
+                color: #1e40af;
+            }
+            QHeaderView::section {
+                background-color: #f8fafc;
+                color: #334155;
+                font-weight: 700;
+                border: none;
+                border-right: 1px solid #e2e8f0;
+                border-bottom: 2px solid #2563eb;
+                padding: 8px 6px;
+                font-size: 12px;
+            }
+            QScrollBar:horizontal {
+                background: #f1f5f9;
+                height: 8px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #cbd5e1;
+                border-radius: 4px;
+                min-width: 20px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: #94a3b8;
+            }
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal { width: 0px; }
+        """)
+        tbl_layout.addWidget(self.op_table)
+        main_layout.addWidget(table_container, 1)
+
+        # Push content to top so scroll area doesn't stretch gaps
+        main_layout.addStretch(1)
+
+        # Initial populate
+        self._refresh_operator_table()
+        self._update_operator_badges()
+        self._sync_active_operator_card()
+
+    def _update_operator_badges(self) -> None:
+        if not hasattr(self, "_operators"):
+            return
+        total = len(self._operators)
+        present = sum(1 for op in self._operators if op.get("attendance") == "Present")
+        absent = sum(1 for op in self._operators if op.get("attendance") == "Absent")
+        active_op = next((op for op in self._operators if op.get("is_active")), None)
+        active_name = active_op.get("name", "--") if active_op else "--"
+        
+        self.op_badge_total.setText(f"Total: {total}")
+        self.op_badge_present.setText(f"Present: {present}")
+        self.op_badge_absent.setText(f"Absent: {absent}")
+        self.op_badge_active.setText(f"Active Operator: {active_name}")
+
+    def _sync_active_operator_card(self) -> None:
+        active_op = next((op for op in self._operators if op.get("is_active")), None)
+        if active_op:
+            name = active_op.get("name", "Unknown")
+            id_val = active_op.get("id", "EMP001")
+            login = active_op.get("login_time", "06:01:22")
+            dur = active_op.get("working_duration", "04:18:23")
+            brk = active_op.get("break_duration", "00:15:00")
+            proc = active_op.get("total_processed", 142)
+            comp = active_op.get("sop_compliance", "97.2%")
+            cyc = active_op.get("avg_cycle_time", "12.5 s")
+            
+            self.perf_name_lbl.setText(f"{name} (Active)")
+            self.op_login_time.setText(f"Login Time: {login}")
+            self.op_duration.setText(f"Working Duration: {dur}")
+            self.op_break_lbl.setText(f"Break Duration: {brk}")
+            self.op_stat_prod.setText(f"Total Processed: {proc} units")
+            self.op_stat_acc.setText(f"SOP Compliance: {comp}")
+            self.op_stat_cycle.setText(f"Avg Cycle Time: {cyc}")
+            
+            if hasattr(self, "worker_id_input"):
+                self.worker_id_input.setText(id_val)
+            if hasattr(self, "worker") and self.worker is not None:
+                self.worker.set_operator_info(id_val, name)
+
+    def _refresh_operator_table(self) -> None:
+        if not hasattr(self, "op_table") or not hasattr(self, "_operators"):
+            return
+        
+        filter_text = self.op_search_input.text().strip().lower() if hasattr(self, "op_search_input") else ""
+        
+        filtered = []
+        for op in self._operators:
+            if not filter_text or filter_text in op.get("id", "").lower() or filter_text in op.get("name", "").lower():
+                filtered.append(op)
+                
+        self.op_table.setRowCount(len(filtered))
+        
+        for row, op in enumerate(filtered):
+            self.op_table.setRowHeight(row, 42)
+            emp_id = op.get("id", "")
+            emp_name = op.get("name", "")
+            
+            # 0: Emp ID
+            item_id = QtWidgets.QTableWidgetItem(emp_id)
+            item_id.setTextAlignment(QtCore.Qt.AlignCenter)
+            item_id.setFlags(item_id.flags() & ~QtCore.Qt.ItemIsEditable)
+            self.op_table.setItem(row, 0, item_id)
+            
+            # 1: Operator Name
+            item_name = QtWidgets.QTableWidgetItem(emp_name)
+            font_n = item_name.font()
+            font_n.setBold(True)
+            item_name.setFont(font_n)
+            item_name.setFlags(item_name.flags() & ~QtCore.Qt.ItemIsEditable)
+            self.op_table.setItem(row, 1, item_name)
+            
+            # 2: RFID
+            item_rfid = QtWidgets.QTableWidgetItem(op.get("rfid", ""))
+            item_rfid.setFlags(item_rfid.flags() & ~QtCore.Qt.ItemIsEditable)
+            self.op_table.setItem(row, 2, item_rfid)
+            
+            # 3: Shift
+            item_shift = QtWidgets.QTableWidgetItem(op.get("shift", ""))
+            item_shift.setFlags(item_shift.flags() & ~QtCore.Qt.ItemIsEditable)
+            self.op_table.setItem(row, 3, item_shift)
+            
+            # 4: Role
+            item_role = QtWidgets.QTableWidgetItem(op.get("role", ""))
+            item_role.setFlags(item_role.flags() & ~QtCore.Qt.ItemIsEditable)
+            self.op_table.setItem(row, 4, item_role)
+            
+            # 5: Workstation
+            item_line = QtWidgets.QTableWidgetItem(op.get("line", ""))
+            item_line.setFlags(item_line.flags() & ~QtCore.Qt.ItemIsEditable)
+            self.op_table.setItem(row, 5, item_line)
+            
+            # 6: Attendance Status (Toggle Button / Badge)
+            attend_val = op.get("attendance", "Present")
+            attend_btn = QtWidgets.QPushButton(f"● {attend_val}")
+            if attend_val == "Present":
+                attend_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #dcfce7; color: #15803d; font-weight: 700;
+                        border: 1px solid #86efac; border-radius: 12px; padding: 4px 10px;
+                    }
+                    QPushButton:hover { background-color: #bbf7d0; }
+                """)
+            else:
+                attend_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #fee2e2; color: #b91c1c; font-weight: 700;
+                        border: 1px solid #fca5a5; border-radius: 12px; padding: 4px 10px;
+                    }
+                    QPushButton:hover { background-color: #fecaca; }
+                """)
+            attend_btn.clicked.connect(lambda _, id_v=emp_id: self._toggle_operator_attendance(id_v))
+            self.op_table.setCellWidget(row, 6, attend_btn)
+            
+            # 7: Shift Work Status (Active / Make Active Button)
+            is_act = op.get("is_active", False)
+            if is_act:
+                act_lbl = QtWidgets.QLabel("🟢 Active (Working)")
+                act_lbl.setAlignment(QtCore.Qt.AlignCenter)
+                act_lbl.setStyleSheet("color: #15803d; font-weight: 800; font-size: 11px;")
+                self.op_table.setCellWidget(row, 7, act_lbl)
+            else:
+                act_btn = QtWidgets.QPushButton("⚡ Activate for Shift")
+                act_btn.setCursor(QtCore.Qt.PointingHandCursor)
+                act_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #eff6ff; color: #2563eb; font-weight: 700;
+                        border: 1px solid #bfdbfe; border-radius: 6px; padding: 3px 8px;
+                    }
+                    QPushButton:hover { background-color: #2563eb; color: #ffffff; }
+                """)
+                act_btn.clicked.connect(lambda _, id_v=emp_id: self._set_active_operator(id_v))
+                self.op_table.setCellWidget(row, 7, act_btn)
+                
+            # 8: Actions (Edit & Delete Buttons)
+            actions_widget = QtWidgets.QWidget()
+            actions_lay = QtWidgets.QHBoxLayout(actions_widget)
+            actions_lay.setContentsMargins(2, 2, 2, 2)
+            actions_lay.setSpacing(6)
+            
+            edit_btn = QtWidgets.QPushButton("Edit")
+            edit_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            edit_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #f8fafc; color: #0284c7; font-weight: 700;
+                    border: 1px solid #cbd5e1; border-radius: 4px; padding: 2px 8px;
+                }
+                QPushButton:hover { background-color: #0284c7; color: #ffffff; }
+            """)
+            edit_btn.clicked.connect(lambda _, id_v=emp_id: self._edit_operator_row(id_v))
+            
+            del_btn = QtWidgets.QPushButton("Delete")
+            del_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            del_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #fff1f2; color: #e11d48; font-weight: 700;
+                    border: 1px solid #fecdd3; border-radius: 4px; padding: 2px 8px;
+                }
+                QPushButton:hover { background-color: #e11d48; color: #ffffff; }
+            """)
+            del_btn.clicked.connect(lambda _, id_v=emp_id: self._delete_operator_row(id_v))
+            
+            actions_lay.addWidget(edit_btn)
+            actions_lay.addWidget(del_btn)
+            self.op_table.setCellWidget(row, 8, actions_widget)
+
+        # Auto-resize table height so ALL rows are visible
+        row_count = self.op_table.rowCount()
+        header_h = self.op_table.horizontalHeader().height()
+        row_h = 44
+        total_h = header_h + (row_count * row_h) + 10
+        self.op_table.setMinimumHeight(max(200, total_h))
+        self.op_table.setMaximumHeight(max(200, total_h))
 
     def _save_operator_details(self) -> None:
-        name = self.op_name_input.text()
-        id_val = self.op_id_input.text()
-        self._activity_logger.log("SAVE", "Operator Management", "Save Operator Profile", f"Name: {name}, ID: {id_val}")
-        self.worker_id_input.setText(id_val)
-        if self.worker is not None:
-            self.worker.worker_id = id_val
-            if self.worker._monitor is not None:
-                self.worker._monitor.worker_id = id_val
-        self.perf_name_lbl.setText(f"{name} (Active)")
-        QtWidgets.QMessageBox.information(self, "Profile Updated", f"Operator Profile saved successfully for {name} ({id_val}).")
+        emp_id = self.op_id_input.text().strip()
+        emp_name = self.op_name_input.text().strip()
+        if not emp_id or not emp_name:
+            QtWidgets.QMessageBox.warning(self, "Validation Error", "Employee ID and Operator Name are required.")
+            return
+            
+        existing = next((op for op in self._operators if op["id"] == emp_id), None)
+        if existing:
+            existing["name"] = emp_name
+            existing["rfid"] = self.op_rfid_input.text().strip()
+            existing["shift"] = self.op_shift_comb.currentText()
+            existing["role"] = self.op_role_comb.currentText()
+            existing["supervisor"] = self.op_super_input.text().strip()
+            existing["line"] = self.op_line_input.text().strip()
+            existing["attendance"] = self.op_attend_comb.currentText()
+            msg = f"Operator {emp_name} ({emp_id}) updated successfully."
+        else:
+            new_op = {
+                "id": emp_id,
+                "name": emp_name,
+                "rfid": self.op_rfid_input.text().strip() or f"RFID-{emp_id}",
+                "shift": self.op_shift_comb.currentText(),
+                "role": self.op_role_comb.currentText(),
+                "supervisor": self.op_super_input.text().strip() or "Supervisor",
+                "line": self.op_line_input.text().strip() or "Line A",
+                "attendance": self.op_attend_comb.currentText(),
+                "is_active": False,
+                "login_time": "06:00:00",
+                "working_duration": "00:00:00",
+                "break_duration": "00:00:00",
+                "total_processed": 0,
+                "sop_compliance": "100.0%",
+                "avg_cycle_time": "0.0 s"
+            }
+            self._operators.append(new_op)
+            msg = f"New operator {emp_name} ({emp_id}) added successfully."
+            
+        self._save_operators()
+        self._refresh_operator_table()
+        self._update_operator_badges()
+        self._sync_active_operator_card()
+        
+        self._activity_logger.log("SAVE", "Operator Management", "Save Operator", f"Name: {emp_name}, ID: {emp_id}")
+        QtWidgets.QMessageBox.information(self, "Success", msg)
 
     def _clear_operator_fields(self) -> None:
-        self.op_name_input.clear()
         self.op_id_input.clear()
+        self.op_name_input.clear()
         self.op_rfid_input.clear()
         self.op_super_input.clear()
+        self.op_line_input.clear()
+
+    def _set_form_operator_active(self) -> None:
+        emp_id = self.op_id_input.text().strip()
+        if not emp_id:
+            QtWidgets.QMessageBox.warning(self, "Warning", "Please enter an Employee ID first.")
+            return
+        self._save_operator_details()
+        self._set_active_operator(emp_id)
+
+    def _edit_operator_row(self, emp_id: str) -> None:
+        op = next((o for o in self._operators if o["id"] == emp_id), None)
+        if not op:
+            return
+        self.op_id_input.setText(op.get("id", ""))
+        self.op_name_input.setText(op.get("name", ""))
+        self.op_rfid_input.setText(op.get("rfid", ""))
+        self.op_super_input.setText(op.get("supervisor", ""))
+        self.op_line_input.setText(op.get("line", ""))
+        
+        idx_shift = self.op_shift_comb.findText(op.get("shift", ""))
+        if idx_shift >= 0:
+            self.op_shift_comb.setCurrentIndex(idx_shift)
+            
+        idx_role = self.op_role_comb.findText(op.get("role", ""))
+        if idx_role >= 0:
+            self.op_role_comb.setCurrentIndex(idx_role)
+            
+        idx_att = self.op_attend_comb.findText(op.get("attendance", "Present"))
+        if idx_att >= 0:
+            self.op_attend_comb.setCurrentIndex(idx_att)
+
+    def _delete_operator_row(self, emp_id: str) -> None:
+        op = next((o for o in self._operators if o["id"] == emp_id), None)
+        if not op:
+            return
+        
+        reply = QtWidgets.QMessageBox.question(
+            self, "Confirm Delete",
+            f"Are you sure you want to delete employee record:\n{op.get('name')} ({emp_id})?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No
+        )
+        if reply == QtWidgets.QMessageBox.Yes:
+            self._operators = [o for o in self._operators if o["id"] != emp_id]
+            self._save_operators()
+            self._refresh_operator_table()
+            self._update_operator_badges()
+            self._sync_active_operator_card()
+            self._activity_logger.log("DELETE", "Operator Management", "Delete Operator", f"ID: {emp_id}")
+
+    def _toggle_operator_attendance(self, emp_id: str) -> None:
+        op = next((o for o in self._operators if o["id"] == emp_id), None)
+        if not op:
+            return
+        curr = op.get("attendance", "Present")
+        new_att = "Absent" if curr == "Present" else "Present"
+        op["attendance"] = new_att
+        
+        if new_att == "Absent" and op.get("is_active"):
+            op["is_active"] = False
+            QtWidgets.QMessageBox.information(
+                self, "Attendance Changed",
+                f"Operator {op.get('name')} marked as Absent and deactivated from shift."
+            )
+            
+        self._save_operators()
+        self._refresh_operator_table()
+        self._update_operator_badges()
+        self._sync_active_operator_card()
+
+    def _set_active_operator(self, emp_id: str) -> None:
+        op_target = next((o for o in self._operators if o["id"] == emp_id), None)
+        if not op_target:
+            return
+            
+        for op in self._operators:
+            if op["id"] == emp_id:
+                op["is_active"] = True
+                op["attendance"] = "Present"
+            else:
+                op["is_active"] = False
+                
+        self._save_operators()
+        self._refresh_operator_table()
+        self._update_operator_badges()
+        self._sync_active_operator_card()
+        
+        self._activity_logger.log("ACTIVATE", "Operator Management", "Set Active Worker", f"Name: {op_target.get('name')}, ID: {emp_id}")
+        QtWidgets.QMessageBox.information(
+            self, "Active Operator Updated",
+            f"⚡ {op_target.get('name')} ({emp_id}) is now set as the ACTIVE working operator for {op_target.get('shift')}!"
+        )
 
     # -- PAGE 4: PRODUCTION ANALYTICS ---------------------------------------
     def _create_analytics_page(self) -> None:

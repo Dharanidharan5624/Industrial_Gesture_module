@@ -1,12 +1,26 @@
 {
-  "res_index": 0,
+  "res_index": 1,
   "rot_index": 0,
-  "cam_width": 1280,
-  "cam_height": 720,
+  "cam_width": 1920,
+  "cam_height": 1080,
   "rotation": 0,
   "confidence": 0.5,
   "sensitivity": 5.0,
   "db_index": 0,
   "backup_index": 0,
-  "theme": "light"
+  "theme": "light",
+  "compliance": {
+    "enabled": true,
+    "detectors": {
+      "mobile_phone": true,
+      "shirt_button": true,
+      "bluetooth_earbuds": true,
+      "spectacles": true,
+      "writing": true
+    },
+    "confidence_threshold": 0.45,
+    "warning_cooldown_sec": 1.0,
+    "save_evidence_images": true,
+    "notify_on_pass": true
+  }
 }

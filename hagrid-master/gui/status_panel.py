@@ -30,6 +30,7 @@ class StatCard(QtWidgets.QFrame):
             }}
         """)
         self.setMinimumHeight(52)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.label = QtWidgets.QLabel(label.upper())
         self.label.setStyleSheet("color: #64748b; font-size: 10px; font-weight: 700; letter-spacing: 0.8px;")
 
@@ -89,6 +90,8 @@ class StatusPanel(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.is_dark = False
+        # Prefer natural content height so parent scroll area never compresses cards.
+        self.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)

@@ -1,16 +1,65 @@
 [
   {
-    "title": "Hand Detection",
-    "description": "All of gestures",
+    "title": "Like",
+    "description": "Reference image for the 'Like' (Thumbs Up) hand gesture used in real-time gesture detection.",
     "category": "Hand Detection",
     "version": "V1.0",
-    "image_path": "/opt/lampp/htdocs/hagrid-master_130726/hagrid-master/gui/reference_images/hand_detection.png"
+    "image_path": "/opt/lampp/htdocs/hagrid-master_130726/hagrid-master/gui/reference_images/_l_i_k_e_.jpeg"
   },
   {
-    "title": "Hand Detecion",
-    "description": "vbnmjhhbg",
+    "title": "Dislike",
+    "description": "Reference image for the 'Dislike' (Thumbs Down) hand gesture used in real-time gesture detection.",
     "category": "Hand Detection",
     "version": "V1.0",
-    "image_path": "/opt/lampp/htdocs/hagrid-master_130726/hagrid-master/gui/reference_images/hand_detecion.png"
+    "image_path": "/opt/lampp/htdocs/hagrid-master_130726/hagrid-master/gui/reference_images/_d_i_s_l_i_k_e_.jpeg"
+  },
+  {
+    "title": "Victory",
+    "description": "Reference image for the Victory (V Sign) hand gesture used in real-time gesture detection.",
+    "category": "Hand Detection",
+    "version": "V1.0",
+    "image_path": "/opt/lampp/htdocs/hagrid-master_130726/hagrid-master/gui/reference_images/_v_i_c_t_o_r_y_.jpeg"
+  },
+  {
+    "title": "Poin Up",
+    "description": "Reference image for the Point Up hand gesture used in real-time gesture detection.",
+    "category": "Hand Detection",
+    "version": "V1.0",
+    "image_path": "/opt/lampp/htdocs/hagrid-master_130726/hagrid-master/gui/reference_images/_p_o_i_n_ _u_p_.jpeg"
+  },
+  {
+    "title": "Point Down",
+    "description": "Reference image for the Point Down hand gesture used in real-time gesture detection.",
+    "category": "Hand Detection",
+    "version": "V1.0",
+    "image_path": "/opt/lampp/htdocs/hagrid-master_130726/hagrid-master/gui/reference_images/_p_o_i_n_t_ _d_o_w_n_.jpeg"
+  },
+  {
+    "title": "Open Hand",
+    "description": "Reference image for the Open Hand gesture used in real-time gesture detection.",
+    "category": "Hand Detection",
+    "version": "V1.0",
+    "image_path": "/opt/lampp/htdocs/hagrid-master_130726/hagrid-master/gui/reference_images/_o_p_e_n_ _h_a_n_d_.jpeg"
+  },
+  {
+    "title": "Close Hand",
+    "description": "Reference image for the Close Hand gesture used in real-time gesture detection.",
+    "category": "Hand Detection",
+    "version": "V1.0",
+    "image_path": "/opt/lampp/htdocs/hagrid-master_130726/hagrid-master/gui/reference_images/_c_l_o_s_e_ _h_a_n_d_.jpeg"
+  },
+  {
+    "title": "Right Side Point",
+    "description": "Reference image for the Right Side Point hand gesture used in real-time gesture detection.",
+    "category": "Hand Detection",
+    "version": "V1.0",
+    "image_path": "/opt/lampp/htdocs/hagrid-master_130726/hagrid-master/gui/reference_images/_r_i_g_h_t_ _s_i_d_e_ _p_o_i_n_t_.jpeg"
+  },
+  {
+    "title": "Left Side Point",
+    "description": "Reference image for the Left Side Point hand gesture used in real-time gesture detection.",
+    "category": "Hand Detection",
+    "version": "V1.0",
+    "image_path": "/opt/lampp/htdocs/hagrid-master_130726/hagrid-master/gui/reference_images/_l_e_f_t_ _s_i_d_e_ _p_o_i_n_t_.jpeg"
   }
 ]

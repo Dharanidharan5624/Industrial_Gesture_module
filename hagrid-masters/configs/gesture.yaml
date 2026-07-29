@@ -1,0 +1,24 @@
+camera:
+  width: 1280
+  height: 720
+
+mediapipe:
+  max_num_hands: 2
+  model_complexity: 1
+  min_detection_confidence: 0.5
+  min_tracking_confidence: 0.5
+
+detection:
+  stable_frames: 3
+  fallback_threshold: 0.4
+  confidence_threshold: 0.5
+
+ui:
+  show_landmarks: true
+
+# Keep model.name empty unless you have a trained checkpoint.
+# With no checkpoint, the app uses MediaPipe landmarks + rule-based gesture
+# detection, which shows the supported signs reliably without random weights.
+model:
+  name:
+  checkpoint:

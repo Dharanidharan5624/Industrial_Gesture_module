@@ -1,0 +1,253 @@
+assemblies:
+- assembly_id: screw_tightening
+  display_name: Industrial Screw-Tightening Assembly
+  detection_mode: screw_monitor
+  is_active: true
+  target_params:
+    turn_target: 2.5
+    align_threshold_px: 50
+  sop_steps:
+  - index: 0
+    title: Operator Verification
+    description: Verify authorized operator identity and workstation readiness.
+    ai_validation: Face Verification
+    expected_result: Authorized Operator
+    timeout: 15
+    criteria: Face Matched
+    warning_msg: Unauthorized operator or face not detected
+    next_step: '1'
+  - index: 1
+    title: Safety & PPE Check
+    description: Ensure gloves, uniform, safety goggles, helmet, and other required
+      PPE are worn correctly.
+    ai_validation: PPE Detection
+    expected_result: PPE Worn
+    timeout: 30
+    criteria: Glove and PPE Detected
+    warning_msg: Please wear hand glove and safety equipment
+    next_step: '2'
+  - index: 2
+    title: Component Verification
+    description: Confirm the correct product, component, and screw are present before
+      operation begins.
+    ai_validation: Object Detection
+    expected_result: Components Present
+    timeout: 20
+    criteria: Correct Screw & Part Verified
+    warning_msg: Component missing or incorrect target
+    next_step: '3'
+  - index: 3
+    title: Tool Verification
+    description: Verify the correct tool is selected and ready for operation.
+    ai_validation: Tool Detection
+    expected_result: Screwdriver Ready
+    timeout: 20
+    criteria: Tool Detected
+    warning_msg: Tool not found or incorrect tool selected
+    next_step: '4'
+  - index: 4
+    title: Tool Alignment
+    description: Align the screwdriver tip accurately with the target screw before
+      rotation.
+    ai_validation: Tool Alignment Detection
+    expected_result: Aligned
+    timeout: 30
+    criteria: Aligned == True
+    warning_msg: Align screwdriver tip to target screw
+    next_step: '5'
+  - index: 5
+    title: Rotation & Torque Monitoring
+    description: Detect clockwise/counter-clockwise rotation, count turns, verify
+      torque target, and validate SOP requirements.
+    ai_validation: Rotation Count Verification
+    expected_result: Target Turns Reached
+    timeout: 45
+    criteria: Turns >= 2.5
+    warning_msg: Rotate screwdriver to target turns (2.5)
+    next_step: '6'
+  - index: 6
+    title: Quality Verification
+    description: Confirm the screw is fully tightened/loosened, tool removed safely,
+      and the final assembly passes inspection.
+    ai_validation: Final Quality Inspection
+    expected_result: Pass
+    timeout: 30
+    criteria: Tightening Complete & Validated
+    warning_msg: Quality inspection failed
+    next_step: '7'
+  - index: 7
+    title: Operation Completion & Logging
+    description: Capture the final image, save logs, update production records, and
+      mark the SOP as completed.
+    ai_validation: Database & Screenshot Logging
+    expected_result: Logged
+    timeout: 10
+    criteria: Screenshot saved and DB entry written
+    warning_msg: Failed to write log records
+    next_step: End
+- assembly_id: air_filter_fit
+  display_name: Air Filter Check & Fitting
+  detection_mode: stub
+  is_active: false
+  target_params: {}
+  sop_steps:
+  - index: 0
+    title: Operator Verification
+    description: Verify authorized operator identity and workstation readiness.
+    ai_validation: Face Verification
+    expected_result: Authorized Operator
+    timeout: 15
+    criteria: Face Matched
+    warning_msg: Unauthorized operator or face not detected
+    next_step: '1'
+  - index: 1
+    title: Pick Up Air Filter
+    description: Pick up the air filter component from the designated parts tray and
+      confirm it is the correct model.
+    ai_validation: Object Detection
+    expected_result: Air Filter Retrieved
+    timeout: 30
+    criteria: Air Filter in Hand
+    warning_msg: Air filter not detected in hand — pick up the component
+    next_step: '2'
+  - index: 2
+    title: Insert Alignment Pin
+    description: Insert a temporary alignment pin at the filter's center point to
+      hold position for the next step.
+    ai_validation: None
+    expected_result: Pin Inserted
+    timeout: 45
+    criteria: Alignment Pin at Center Point
+    warning_msg: Alignment pin not detected at center — insert before proceeding
+    next_step: '3'
+  - index: 3
+    title: Pick Up Rubber Mount
+    description: Pick up a rubber mount from the parts bin (right-side, bottom).
+    ai_validation: Object Detection
+    expected_result: Rubber Mount Retrieved
+    timeout: 30
+    criteria: Rubber Mount in Hand
+    warning_msg: Rubber mount not detected — retrieve from right-side parts bin
+    next_step: '4'
+  - index: 4
+    title: Apply Adhesive to Rubber Mount
+    description: Apply adhesive (glue) evenly to the rubber mount surface before fitting.
+    ai_validation: None
+    expected_result: Adhesive Applied
+    timeout: 45
+    criteria: Glue Applied to Mount Surface
+    warning_msg: Adhesive application not confirmed — ensure glue is applied before
+      fitting
+    next_step: '5'
+  - index: 5
+    title: Fit Rubber Mount onto Filter
+    description: Fit the glued rubber mount onto the air filter's center point, using
+      the temporary alignment pin as guide.
+    ai_validation: None
+    expected_result: Rubber Mount Fitted
+    timeout: 60
+    criteria: Mount Seated at Center Point (Pin-Guided)
+    warning_msg: Rubber mount not correctly seated — use alignment pin as guide
+    next_step: '6'
+  - index: 6
+    title: Remove Alignment Pin
+    description: Carefully remove the temporary alignment pin after the rubber mount
+      is seated.
+    ai_validation: None
+    expected_result: Pin Removed
+    timeout: 30
+    criteria: Alignment Pin Absent
+    warning_msg: Alignment pin still detected — remove before applying pressure
+    next_step: '7'
+  - index: 7
+    title: Apply Pressure to Bond Mount
+    description: Apply firm, even pressure on the mounted rubber to fully seat and
+      bond it to the filter.
+    ai_validation: None
+    expected_result: Mount Bonded
+    timeout: 45
+    criteria: Pressure Applied — Mount Seated Flat
+    warning_msg: Pressure step not completed — press firmly on rubber mount
+    next_step: '8'
+  - index: 8
+    title: Quality Check
+    description: Confirm the rubber mount is centered, seated flat, and bonded with
+      no visible gap or misalignment.
+    ai_validation: Final Quality Inspection
+    expected_result: Pass — Mount Centered & Bonded
+    timeout: 30
+    criteria: No Gap or Misalignment Detected
+    warning_msg: Quality check failed — rubber mount is not flat, centered, or bonded
+      correctly
+    next_step: '9'
+  - index: 9
+    title: Completion & Logging
+    description: Mark the fitting step complete, capture the final image, save logs,
+      and update production records.
+    ai_validation: Database & Screenshot Logging
+    expected_result: Logged
+    timeout: 10
+    criteria: Screenshot saved and DB entry written
+    warning_msg: Failed to write log records
+    next_step: End
+- assembly_id: air_filter_pack
+  display_name: Air Filter Quality Check & Packing
+  detection_mode: stub
+  is_active: false
+  target_params: {}
+  sop_steps:
+  - index: 0
+    title: Operator Verification
+    description: Verify authorized operator identity and workstation readiness.
+    ai_validation: Face Verification
+    expected_result: Authorized Operator
+    timeout: 15
+    criteria: Face Matched
+    warning_msg: Unauthorized operator or face not detected
+    next_step: '1'
+  - index: 1
+    title: Visual Quality Inspection
+    description: Inspect the air filter for surface defects, tears, contamination,
+      or dimensional non-conformances.
+    ai_validation: Final Quality Inspection
+    expected_result: Pass — No Defects
+    timeout: 45
+    criteria: Visual Inspection Passed
+    warning_msg: Defect or contamination detected — do not pack
+    next_step: '2'
+  - index: 2
+    title: Dimensional Verification
+    description: Verify filter dimensions against specified tolerances using measurement
+      tool or reference jig.
+    ai_validation: None
+    expected_result: Dimensions Within Tolerance
+    timeout: 30
+    criteria: Dimensional Check Passed
+    warning_msg: Dimensions out of tolerance — reject and quarantine
+    next_step: '3'
+  - index: 3
+    title: Packing & Label Check
+    description: Pack the filter in the correct packaging, apply the label, and verify
+      label information is accurate.
+    ai_validation: OCR Verification
+    expected_result: Label Verified
+    timeout: 30
+    criteria: Correct Label Applied
+    warning_msg: Label mismatch or missing — re-print and re-apply
+    next_step: '4'
+  - index: 4
+    title: Final Packing Completion & Logging
+    description: Seal the package, capture the final image, save logs, and mark the
+      SOP as completed.
+    ai_validation: Database & Screenshot Logging
+    expected_result: Logged
+    timeout: 10
+    criteria: Screenshot saved and DB entry written
+    warning_msg: Failed to write log records
+    next_step: End
+- assembly_id: product_weight_check
+  display_name: product weight check
+  detection_mode: stub
+  is_active: false
+  target_params: {}
+  sop_steps: []

@@ -1,0 +1,12 @@
+{
+  "res_index": 0,
+  "rot_index": 0,
+  "cam_width": 1280,
+  "cam_height": 720,
+  "rotation": 0,
+  "confidence": 0.5,
+  "sensitivity": 5.0,
+  "db_index": 0,
+  "backup_index": 0,
+  "theme": "light"
+}

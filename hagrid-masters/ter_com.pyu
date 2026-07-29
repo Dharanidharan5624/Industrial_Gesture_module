@@ -1,0 +1,4 @@
+cd /opt/lampp/htdocs/hagrid-master_130726/hagrid-master
+source .venv/bin/activate
+python demo_ff.py -p configs/ResNet18.yaml
+

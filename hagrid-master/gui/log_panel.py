@@ -47,7 +47,10 @@ class LogPanel(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(220)
+        # Flexible height so Live Monitor panels keep usable space on smaller windows.
+        self.setMinimumHeight(140)
+        self.setMaximumHeight(240)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
         self.is_dark = False
         
         layout = QtWidgets.QVBoxLayout(self)
@@ -63,9 +66,15 @@ class LogPanel(QtWidgets.QWidget):
         self.refresh_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.refresh_btn.setStyleSheet("QPushButton { background-color: #fff; border: 1px solid #ccc; border-radius: 4px; padding: 5px 10px; } QPushButton:hover { background-color: #f0f0f0; }")
         
+        self.clear_btn = QtWidgets.QPushButton("Clear Logs")
+        self.clear_btn.setObjectName("dangerBtn")
+        self.clear_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.clear_btn.setStyleSheet("QPushButton { background-color: #ef4444; color: #fff; border: none; border-radius: 4px; padding: 5px 10px; font-weight: 600; } QPushButton:hover { background-color: #dc2626; }")
+        
         header_row.addWidget(self.title)
         header_row.addStretch(1)
         header_row.addWidget(self.refresh_btn)
+        header_row.addWidget(self.clear_btn)
         layout.addLayout(header_row)
  
         self.table = QtWidgets.QTableView()
@@ -78,7 +87,32 @@ class LogPanel(QtWidgets.QWidget):
         layout.addWidget(self.table)
 
         self.refresh_btn.clicked.connect(self.refresh)
+        self.clear_btn.clicked.connect(self.clear_logs)
         self.refresh()
+
+    def clear_logs(self) -> None:
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Clear Log Table",
+            "Are you sure you want to clear all operation and compliance log entries?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No
+        )
+        if reply == QtWidgets.QMessageBox.Yes:
+            if os.path.exists("screw_monitoring_log.csv"):
+                try:
+                    with open("screw_monitoring_log.csv", "w", newline="") as fh:
+                        writer = csv.writer(fh)
+                        writer.writerow(CSV_COLUMNS)
+                except Exception:
+                    pass
+            try:
+                from compliance.logger import ComplianceLogger
+                ComplianceLogger().clear_all_logs()
+            except Exception:
+                pass
+            self.refresh()
+            QtWidgets.QMessageBox.information(self, "Cleared", "Log entries cleared successfully.")
 
     def set_theme(self, is_dark: bool) -> None:
         self.is_dark = is_dark

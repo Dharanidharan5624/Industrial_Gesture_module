@@ -5,6 +5,8 @@ The HAGRIDv2 gesture taxonomy defines 18 gesture classes plus the special
 released checkpoints so weights can be loaded without remapping.
 """
 
+import os
+
 # ── Legacy constants kept for backward-compatibility ───────────────────────
 # demo_ff.py and other original scripts import these directly.
 IMAGES = (".jpeg", ".jpg", ".jp2", ".png", ".tiff", ".jfif", ".bmp", ".webp", ".heic")
@@ -126,7 +128,52 @@ CSV_COLUMNS = [
     "Confidence",
     "Status",
     "Screenshot_Path",
+    "Assembly_ID",
 ]
+
+# Operator Compliance & Safety Monitoring ------------------------------------
+COMPLIANCE_CSV_PATH = "compliance_monitoring_log.csv"
+COMPLIANCE_DB_PATH = os.path.join(LOG_DIR, "compliance.db")
+COMPLIANCE_SCREENSHOT_DIR = os.path.join(LOG_DIR, "compliance_screenshots")
+COMPLIANCE_SCREENSHOT_PREFIX = "compliance"
+COMPLIANCE_FRAME_SKIP = 3
+COMPLIANCE_DEFAULT_CONFIDENCE = 0.45
+COMPLIANCE_DEFAULT_COOLDOWN_SEC = 8.0
+
+COMPLIANCE_EVENT_MOBILE_PHONE = "MOBILE_PHONE"
+COMPLIANCE_EVENT_SHIRT_BUTTON = "SHIRT_BUTTON"
+COMPLIANCE_EVENT_BLUETOOTH = "BLUETOOTH"
+COMPLIANCE_EVENT_EARBUDS = "EARBUDS"
+COMPLIANCE_EVENT_SPECTACLES = "SPECTACLES"
+COMPLIANCE_EVENT_WRITING = "WRITING"
+COMPLIANCE_EVENT_PASSED = "COMPLIANCE_PASSED"
+
+COMPLIANCE_CSV_COLUMNS = [
+    "Timestamp",
+    "Operator_ID",
+    "Operator_Name",
+    "Event_Type",
+    "Detection_Result",
+    "Camera_ID",
+    "Confidence",
+    "Screenshot_Path",
+    "Status",
+]
+
+COMPLIANCE_DEFAULT_SETTINGS = {
+    "enabled": True,
+    "detectors": {
+        "mobile_phone": True,
+        "shirt_button": True,
+        "bluetooth_earbuds": True,
+        "spectacles": True,
+        "writing": True,
+    },
+    "confidence_threshold": COMPLIANCE_DEFAULT_CONFIDENCE,
+    "warning_cooldown_sec": COMPLIANCE_DEFAULT_COOLDOWN_SEC,
+    "save_evidence_images": True,
+    "notify_on_pass": False,
+}
 
 # Tool recognition (SIFT + FLANN)
 FLANN_RATIO_THRESHOLD = 0.7

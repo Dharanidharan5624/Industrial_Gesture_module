@@ -129,6 +129,7 @@ class ScrewMonitor:
         reference_dir: str = "images",
         use_supabase: bool = True,
         supabase_table: str = "screw_monitoring_log",
+        assembly_id: str = "screw_tightening",
     ):
         self.worker_id = worker_id
         self.screw_center = screw_center
@@ -139,8 +140,13 @@ class ScrewMonitor:
         self.log_dir = log_dir
         self.use_supabase = use_supabase
         self.supabase_table = supabase_table
+        self.assembly_id = assembly_id
         self.state = MonitorState()
+        self.show_screw_target: bool = False
         self.tool_recognizer = ToolRecognizer(reference_dir=reference_dir)
+        # Bottom Y of the on-frame status panel (Aligned/Direction/…).
+        # Compliance overlays stack below this so they don't cover Aligned.
+        self._overlay_bottom_y = 50
         self._ensure_csv_header()
         self._hands = None
         if _MP_OK:
@@ -321,6 +327,7 @@ class ScrewMonitor:
             "Confidence": f"{self.state.confidence:.1f}%",
             "Status": "Completed",
             "Screenshot_Path": path,
+            "Assembly_ID": self.assembly_id,
         }
         with open(self.log_csv, "a", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
@@ -333,10 +340,11 @@ class ScrewMonitor:
 
     # -- drawing -----------------------------------------------------------
     def _draw_overlay(self, frame: np.ndarray, w: int, h: int) -> None:
-        # Screw target
-        cv2.circle(frame, self.screw_center, 18, COLOR_BLUE, 2)
-        cv2.putText(frame, "Screw", (self.screw_center[0] - 25, self.screw_center[1] - 28),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_BLUE, 1)
+        # Screw target - only drawn when active SOP step is alignment / rotation
+        if getattr(self, "show_screw_target", False):
+            cv2.circle(frame, self.screw_center, 18, COLOR_BLUE, 2)
+            cv2.putText(frame, "Screw", (self.screw_center[0] - 25, self.screw_center[1] - 28),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_BLUE, 1)
 
         # Hand bbox + handedness + glove
         hand = self.state.hand
@@ -354,18 +362,20 @@ class ScrewMonitor:
             cv2.line(frame, index_mcp.astype(int), index_tip.astype(int),
                      COLOR_GREEN if self.state.aligned else COLOR_RED, 3)
 
-        # Status panel
+        # Status panel — start below FPS overlay (drawn at y≈30) so lines never collide.
         panel = [
             f"Aligned: {'YES' if self.state.aligned else 'NO'}",
             f"Direction: {self.state.direction}",
             f"Turns: {self.state.rotation_count:.2f} / {self.turn_target}",
             f"Glove: {hand.glove}",
         ]
-        y = 20
+        y = 50
         for line in panel:
             cv2.rectangle(frame, (8, y - 4), (8 + 230, y + 18), COLOR_BLACK, -1)
             cv2.putText(frame, line, (12, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_WHITE, 1)
             y += 26
+        # Expose end Y so compliance alerts can stack underneath without overlap.
+        self._overlay_bottom_y = y
 
         # Completion card
         if self.state.card_visible:

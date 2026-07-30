@@ -158,15 +158,14 @@ class PhoneDetector(BaseDetector):
 
         collect(frame)
 
-        # Extra tiles on wide / tall industrial frames
-        if max(h, w) >= 720:
-            tw, th = max(320, int(w * 0.5)), max(320, int(h * 0.5))
+        # Extra tiles only on HD (720p+) industrial frames — skip for 640px streams
+        if max(h, w) >= 900:
+            tw, th = max(320, int(w * 0.6)), max(320, int(h * 0.6))
             for ox, oy in (
                 (0, 0),
                 (max(0, w - tw), 0),
                 (0, max(0, h - th)),
                 (max(0, w - tw), max(0, h - th)),
-                (max(0, (w - tw) // 2), max(0, (h - th) // 2)),
             ):
                 tile = frame[oy : oy + th, ox : ox + tw]
                 if tile.size:

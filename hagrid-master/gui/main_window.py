@@ -196,7 +196,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.is_dark_theme:
             self._apply_theme_mode(True)
 
-        self._start_worker()
+        # Defer camera start until camera scan completes — scan is async so
+        # source_combo is empty if we call _start_worker() immediately here.
+        self._auto_start_on_scan = self._assembly_manager.is_active_assembly()
+        if not self._auto_start_on_scan:
+            self._set_hold_state("Active assembly is currently in Hold state.")
 
     def _load_active_settings_early(self) -> None:
         """Read app_settings.json at startup before UI is built."""
@@ -1613,25 +1617,50 @@ class MainWindow(QtWidgets.QMainWindow):
             )
 
     def _refresh_assembly_management_page(self) -> None:
-        """Update assembly card highlights and the active badge label."""
+        """Update assembly card highlights and active/hold status badge labels."""
         if not hasattr(self, "am_card_widgets"):
             return
         active_id = self._assembly_manager.get_active_assembly_id()
+        is_active_sys = self._assembly_manager.is_active_assembly(active_id)
         active_name = self._assembly_manager.get_active_assembly().get(
             "display_name", active_id
         )
         if hasattr(self, "am_active_badge"):
-            self.am_active_badge.setText(f"Active: {active_name}")
+            if is_active_sys:
+                self.am_active_badge.setText(f"Active: {active_name} (Monitoring Auto-Started)")
+                self.am_active_badge.setStyleSheet(
+                    "background-color: #dcfce7; color: #15803d; border-radius: 8px; "
+                    "padding: 4px 12px; font-weight: 800; font-size: 11px; border: 1px solid #86efac;"
+                )
+            else:
+                self.am_active_badge.setText(f"Hold: {active_name} (Inactive)")
+                self.am_active_badge.setStyleSheet(
+                    "background-color: #fef3c7; color: #b45309; border-radius: 8px; "
+                    "padding: 4px 12px; font-weight: 800; font-size: 11px; border: 1px solid #fcd34d;"
+                )
 
         for aid, card in self.am_card_widgets.items():
-            is_active = (aid == active_id)
-            self._style_assembly_card(card, is_active)
+            card_is_active = (aid == active_id) and is_active_sys
+            self._style_assembly_card(card, card_is_active)
             if hasattr(card, "_activate_btn"):
-                card._activate_btn.setEnabled(not is_active)
-                card._activate_btn.setObjectName("secondaryBtn" if is_active else "primaryBtn")
-                card._activate_btn.setText(
-                    "✓ Currently Active" if is_active else "Set as Active Assembly"
-                )
+                btn = card._activate_btn
+                btn.setEnabled(True)
+                if card_is_active:
+                    btn.setObjectName("secondaryBtn")
+                    btn.setText("✓ Active (Click to Hold)")
+                    try:
+                        btn.clicked.disconnect()
+                    except Exception:
+                        pass
+                    btn.clicked.connect(lambda _=False, a=aid: self._deactivate_assembly(a))
+                else:
+                    btn.setObjectName("primaryBtn")
+                    btn.setText("Set as Active Assembly")
+                    try:
+                        btn.clicked.disconnect()
+                    except Exception:
+                        pass
+                    btn.clicked.connect(lambda _=False, a=aid: self._set_active_assembly(a))
 
         det_mode = self._assembly_manager.get_detection_mode(active_id)
         if hasattr(self, "am_stub_banner"):
@@ -1816,28 +1845,41 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._refresh_assembly_management_page()
 
-    def _set_active_assembly(self, assembly_id: str) -> None:
-        """Switch the active assembly — stop/restart monitor if it is running."""
-        monitor_was_running = (
-
-            self.worker is not None and self.worker.isRunning()
-        )
-        if monitor_was_running:
-            reply = QtWidgets.QMessageBox.question(
-                self, "Switch Assembly?",
-                "The Live Monitor is currently running.\n\n"
-                "Switching assemblies will stop the monitor, reset all counters, "
-                "and reinitialise with the new assembly's pipeline and SOP steps.\n\n"
-                "Continue?",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.No,
+    def _set_hold_state(self, reason: str = "") -> None:
+        """Place the Live Monitoring system into a Hold state when an assembly is inactive."""
+        self._stop_worker()
+        if hasattr(self, "camera_view") and self.camera_view is not None:
+            self.camera_view.show_placeholder(
+                "HOLD STATE — Assembly Inactive\n\n"
+                "Mark an assembly as Active in Assembly Management to automatically launch live monitoring."
             )
-            if reply != QtWidgets.QMessageBox.Yes:
-                return
+        if hasattr(self, "sub_title_sop"):
+            self.sub_title_sop.setText(
+                f"SOP: {getattr(self, 'active_sop_name', 'None')} | Status: HOLD (Assembly Inactive)"
+            )
+        if hasattr(self, "status_panel") and self.status_panel is not None:
+            if hasattr(self.status_panel, "set_status"):
+                self.status_panel.set_status("HOLD", "Assembly Inactive")
+        self.statusBar().showMessage(
+            f"Live Monitoring on HOLD — {reason or 'Selected assembly is not active'}", 5000
+        )
+
+    def _deactivate_assembly(self, assembly_id: str) -> None:
+        """Deactivate an assembly, setting the Live Monitoring module into Hold state."""
+        self._assembly_manager.deactivate_assembly(assembly_id)
+        self._refresh_assembly_management_page()
+        self._set_hold_state(f"Assembly '{assembly_id}' set to Hold state.")
+
+    def _set_active_assembly(self, assembly_id: str) -> None:
+        """Switch active assembly and automatically start live camera monitoring & SOP workflow."""
+        # Stop existing worker cleanly without modal questions
+        if self.worker is not None and self.worker.isRunning():
             self._stop_worker()
 
         self._assembly_manager.set_active_assembly(assembly_id)
         _asm = self._assembly_manager.get_active_assembly()
+        is_active = self._assembly_manager.is_active_assembly(assembly_id)
+
         self.active_sop_name = _asm.get("display_name", assembly_id)
         self.active_turn_target = float(_asm.get("target_params", {}).get("turn_target", 2.5))
         self._active_detection_mode = _asm.get("detection_mode", "screw_monitor")
@@ -1850,45 +1892,61 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._activity_logger.log(
             "ASSEMBLY", "Assembly Management", "Set Active Assembly",
-            f"Switched to: {self.active_sop_name}"
+            f"Activated: {self.active_sop_name} (Auto-Start Live Monitoring)"
         )
-        self.statusBar().showMessage(
-            f"Active assembly set to: {self.active_sop_name}", 4000
-        )
+
+        if is_active:
+            self.statusBar().showMessage(
+                f"Active assembly set to: {self.active_sop_name} | Live Monitoring auto-started", 5000
+            )
+            # Automatic camera & SOP workflow activation without manual intervention
+            self._start_worker()
+        else:
+            self._set_hold_state(f"Assembly '{self.active_sop_name}' is inactive.")
 
     def _reload_live_monitor_for_assembly(self) -> None:
         """Rebuild the Live Monitor header and SOP panel for the active assembly."""
-        # Update subtitle label
         _asm = self._assembly_manager.get_active_assembly()
         det_mode = _asm.get("detection_mode", "screw_monitor")
+        is_active = self._assembly_manager.is_active_assembly()
+        
+        # Rebuild the SOP panel with steps for the active assembly
+        new_steps = self._assembly_manager.get_sop_steps()
+        if hasattr(self, "sop_panel") and self.sop_panel is not None:
+            self.sop_panel.rebuild_steps(new_steps)
+            self.sop_panel.set_theme(getattr(self, "is_dark_theme", False))
+
+        step_count = len(new_steps)
         if hasattr(self, "sub_title_sop"):
-            if det_mode == "screw_monitor":
+            if not is_active:
                 self.sub_title_sop.setText(
-                    f"SOP: {self.active_sop_name} | Target Turns: {self.active_turn_target}"
+                    f"SOP: {self.active_sop_name} | Status: HOLD (Assembly Inactive)"
+                )
+            elif det_mode == "screw_monitor":
+                self.sub_title_sop.setText(
+                    f"SOP: {self.active_sop_name} | Target Turns: {self.active_turn_target} ({step_count} Steps)"
+                )
+            elif det_mode == "stub":
+                self.sub_title_sop.setText(
+                    f"SOP: {self.active_sop_name} | Pipeline: Stub ({step_count} Steps)"
                 )
             else:
                 self.sub_title_sop.setText(
-                    f"SOP: {self.active_sop_name} | Pipeline: Under Development"
+                    f"SOP: {self.active_sop_name} | Active Monitor ({step_count} Steps)"
                 )
 
         # Enable/disable the SOP Monitor Logic checkbox
         if hasattr(self, "chk_monitor"):
-            if det_mode == "stub":
+            if det_mode == "stub" or not is_active:
                 self.chk_monitor.setChecked(False)
                 self.chk_monitor.setEnabled(False)
                 self.chk_monitor.setToolTip(
-                    "SOP monitoring is disabled for this assembly (pipeline not yet implemented)."
+                    "SOP monitoring is disabled while assembly is inactive or stub."
                 )
             else:
                 self.chk_monitor.setEnabled(True)
                 self.chk_monitor.setChecked(True)
                 self.chk_monitor.setToolTip("")
-
-        # Rebuild the SOP panel with steps for the active assembly
-        new_steps = self._assembly_manager.get_sop_steps()
-        if hasattr(self, "sop_panel") and self.sop_panel is not None:
-            self.sop_panel.rebuild_steps(new_steps)
-            self.sop_panel.set_theme(getattr(self.sop_panel, "is_dark", False))
 
     def _reload_sop_config_for_assembly(self, assembly_id: str | None = None) -> None:
         """Repopulate the SOP Configuration page for the given (or active) assembly."""
@@ -2643,11 +2701,13 @@ class MainWindow(QtWidgets.QMainWindow):
         # Persist steps to assemblies.yaml for the target assembly
         self._assembly_manager.save_sop_steps(assembly_id, STEPS)
 
-        # Only rebuild the live SOP panel if we're syncing the ACTIVE assembly
+        # Rebuild live SOP panel and auto-start monitoring if modifying the ACTIVE assembly
         if assembly_id == self._assembly_manager.get_active_assembly_id():
             if hasattr(self, "sop_panel") and self.sop_panel is not None:
                 self.sop_panel.rebuild_steps(STEPS)
-                self.sop_panel.set_theme(self.sop_panel.is_dark)
+                self.sop_panel.set_theme(getattr(self.sop_panel, "is_dark", False))
+            if self._assembly_manager.is_active_assembly(assembly_id):
+                self._start_worker()
 
     def _add_preset_step(self, idx: int) -> None:
         if idx <= 0:
@@ -5434,6 +5494,13 @@ class MainWindow(QtWidgets.QMainWindow):
             match_idx = self.source_combo.findData(preferred_source)
             self.source_combo.setCurrentIndex(match_idx if match_idx >= 0 else 0)
         self.source_combo.blockSignals(False)
+
+        # Auto-start the camera worker once the scan finishes and the combo
+        # is populated — this avoids the race condition where _start_worker()
+        # fires at __init__ time before source_combo has any entries.
+        if getattr(self, "_auto_start_on_scan", False):
+            self._auto_start_on_scan = False
+            self._start_worker()
 
     def _current_source(self) -> int:
         data = self.source_combo.currentData()

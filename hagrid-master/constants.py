@@ -136,7 +136,7 @@ COMPLIANCE_CSV_PATH = "compliance_monitoring_log.csv"
 COMPLIANCE_DB_PATH = os.path.join(LOG_DIR, "compliance.db")
 COMPLIANCE_SCREENSHOT_DIR = os.path.join(LOG_DIR, "compliance_screenshots")
 COMPLIANCE_SCREENSHOT_PREFIX = "compliance"
-COMPLIANCE_FRAME_SKIP = 3
+COMPLIANCE_FRAME_SKIP = 6  # Run heavy detectors every 6 frames (~5fps at 30fps) for performance
 COMPLIANCE_DEFAULT_CONFIDENCE = 0.45
 COMPLIANCE_DEFAULT_COOLDOWN_SEC = 8.0
 

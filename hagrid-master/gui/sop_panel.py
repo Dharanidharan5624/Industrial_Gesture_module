@@ -370,27 +370,23 @@ class SopStepPanel(QtWidgets.QWidget):
             card.set_theme(is_dark)
 
     def advance_manual_step(self) -> None:
-        """Manually mark the current active manual step (ai_validation=='None') as done.
+        """Manually mark the currently active step as done and advance to the next step.
 
-        Called by the 'Next Step' button. Only advances if the currently
-        active step has ai_validation 'None' (i.e. no automated detection).
+        Called by the 'Next Step' button. Works for both manual steps and AI steps during operation.
         """
         for card in self.cards:
-            if card.step.status == "active" and card.step.ai_validation in ("None", "none", ""):
+            if card.step.status == "active":
                 card.set_status("done")
-                card.desc.setText("Step confirmed by operator")
+                card.desc.setText("Step confirmed / completed")
                 break
         self._sync_next_step_btn()
 
     def _sync_next_step_btn(self) -> None:
-        """Enable the Next Step button only when a manual step is actively waiting."""
+        """Enable the Next Step button whenever any step is actively pending completion."""
         if not hasattr(self, "next_step_btn"):
             return
-        has_manual_active = any(
-            c.step.status == "active" and c.step.ai_validation in ("None", "none", "")
-            for c in self.cards
-        )
-        self.next_step_btn.setEnabled(has_manual_active)
+        has_active = any(c.step.status == "active" for c in self.cards)
+        self.next_step_btn.setEnabled(has_active)
 
     def rebuild_steps(self, steps: List[SopStep]) -> None:
         self.cards.clear()
@@ -402,11 +398,19 @@ class SopStepPanel(QtWidgets.QWidget):
                 child.widget().deleteLater()
 
         for step in steps:
+            # Reset step status to pending when rebuilding
+            step.status = "pending"
             card = SopStepCard(step, self.scroll_content)
             card.title.setText(step.title)
             card.desc.setText(step.description)
+            card.set_theme(self.is_dark)
             self.cards.append(card)
             self.scroll_layout.addWidget(card)
+
+        # Set first step as active if steps exist
+        if self.cards:
+            self.cards[0].set_status("active")
+        self._sync_next_step_btn()
 
     def update_state(self, state: dict) -> None:
         """Progress steps dynamically based on validation type.
@@ -415,6 +419,9 @@ class SopStepPanel(QtWidgets.QWidget):
         Steps only progress forward: pending -> active -> done.
         """
         n_steps = len(self.cards)
+        if n_steps == 0:
+            return False
+
         default_desc = [card.step.description for card in self.cards]
 
         for i in range(n_steps):
@@ -436,10 +443,10 @@ class SopStepPanel(QtWidgets.QWidget):
             new_status = current
             new_desc = default_desc[i]
 
-            if val_type == "Face Verification":
+            if val_type in ("Face Verification", "Operator Verification"):
                 new_status = "done"
 
-            elif val_type in ("PPE Check", "PPE Detection"):
+            elif val_type in ("PPE Check", "PPE Detection", "Safety & PPE Check"):
                 handedness = state.get("handedness", "")
                 glove = state.get("glove", "Normal")
                 if current == "error":
@@ -455,8 +462,13 @@ class SopStepPanel(QtWidgets.QWidget):
                 else:
                     new_status = "active"
 
-            elif val_type in ("Object Detection", "Component Verification"):
-                new_status = "done"
+            elif val_type in (
+                "Object Detection", "Component Verification", "Object Detection & Tracking",
+                "Object & Feature Detection", "Alignment & Object Detection", "Pose & Object Rotation Detection",
+                "Motion & Pose Detection", "Action / Pressing Detection", "Object Absence Detection"
+            ):
+                if current == "pending":
+                    new_status = "active"
 
             elif val_type in ("Tool Detection", "Tool Verification"):
                 if state.get("aligned") or state.get("handedness", ""):
@@ -481,7 +493,7 @@ class SopStepPanel(QtWidgets.QWidget):
                     if turns > 0:
                         new_desc = f"Rotating: {turns:.1f} / {target:.1f} turns"
 
-            elif val_type in ("Final Quality Inspection", "Quality Verification"):
+            elif val_type in ("Final Quality Inspection", "Quality Verification", "Quality Inspection Engine", "Quality Inspection"):
                 prev_rotation_done = any(
                     self.cards[j].step.ai_validation in ("Rotation Count Verification", "Rotation")
                     and self.cards[j].step.status == "done"
@@ -528,22 +540,16 @@ class SopStepPanel(QtWidgets.QWidget):
                 new_status = "done"
 
             else:
-                # ai_validation is "None", "", or an unrecognised value.
-                # These are MANUAL steps — they stay 'active' until the operator
-                # clicks the 'Next Step' button. They must NEVER auto-complete.
+                # Manual steps or default active step progression
                 if current == "pending":
                     new_status = "active"
-                # If already 'active', leave it as-is (waiting for operator)
-                # done / error states are frozen by the guard at the top.
 
-            # Apply changes via set_status (which also sets step.status internally)
+            # Apply changes via set_status
             if new_status != current:
                 card.set_status(new_status)
-            # Update description if changed
             if new_desc != card.desc.text():
                 card.desc.setText(new_desc)
 
-        # Sync the Next Step button state
         self._sync_next_step_btn()
 
         return any(

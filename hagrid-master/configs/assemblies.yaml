@@ -30,7 +30,7 @@ assemblies:
     title: Component Verification
     description: Confirm the correct product, component, and screw are present before
       operation begins.
-    ai_validation: Object Detection
+    ai_validation: Face Verification
     expected_result: Components Present
     timeout: 20
     criteria: Correct Screw & Part Verified
@@ -87,9 +87,20 @@ assemblies:
     next_step: End
 - assembly_id: air_filter_fit
   display_name: Air Filter Check & Fitting
-  detection_mode: stub
+  detection_mode: air_filter_monitor
   is_active: false
-  target_params: {}
+  target_params:
+    pressing_duration_sec: 2.0
+    work_area_roi:
+    - 100
+    - 100
+    - 500
+    - 400
+    finished_area_roi:
+    - 500
+    - 100
+    - 640
+    - 400
   sop_steps:
   - index: 0
     title: Operator Verification
@@ -101,94 +112,188 @@ assemblies:
     warning_msg: Unauthorized operator or face not detected
     next_step: '1'
   - index: 1
-    title: Pick Up Air Filter
-    description: Pick up the air filter component from the designated parts tray and
-      confirm it is the correct model.
-    ai_validation: Object Detection
-    expected_result: Air Filter Retrieved
+    title: Safety & PPE Check
+    description: Ensure gloves, uniform, safety goggles, helmet, and required PPE
+      are worn correctly.
+    ai_validation: PPE Detection
+    expected_result: PPE Worn
     timeout: 30
-    criteria: Air Filter in Hand
-    warning_msg: Air filter not detected in hand — pick up the component
+    criteria: Glove and PPE Detected
+    warning_msg: Please wear hand glove and safety equipment
     next_step: '2'
   - index: 2
-    title: Insert Alignment Pin
-    description: Insert a temporary alignment pin at the filter's center point to
-      hold position for the next step.
-    ai_validation: None
-    expected_result: Pin Inserted
-    timeout: 45
-    criteria: Alignment Pin at Center Point
-    warning_msg: Alignment pin not detected at center — insert before proceeding
+    title: Pick & Inspect Air Filter
+    description: Pick up the raw air filter frame and visually check for cracks, deformities,
+      or foreign debris.
+    ai_validation: Face Verification
+    expected_result: Air Filter Present & Intact
+    timeout: 30
+    criteria: Air Filter Detected
+    warning_msg: Air filter missing or invalid orientation
     next_step: '3'
   - index: 3
-    title: Pick Up Rubber Mount
-    description: Pick up a rubber mount from the parts bin (right-side, bottom).
-    ai_validation: Object Detection
-    expected_result: Rubber Mount Retrieved
+    title: Position Air Filter in Workstation
+    description: Place the air filter securely on the mounting fixture in the primary
+      assembly area.
+    ai_validation: Face Verification
+    expected_result: Filter Placed in ROI
     timeout: 30
-    criteria: Rubber Mount in Hand
-    warning_msg: Rubber mount not detected — retrieve from right-side parts bin
+    criteria: Filter Bounding Box inside Work ROI
+    warning_msg: Place air filter into designated fixture zone
     next_step: '4'
   - index: 4
-    title: Apply Adhesive to Rubber Mount
-    description: Apply adhesive (glue) evenly to the rubber mount surface before fitting.
-    ai_validation: None
-    expected_result: Adhesive Applied
-    timeout: 45
-    criteria: Glue Applied to Mount Surface
-    warning_msg: Adhesive application not confirmed — ensure glue is applied before
-      fitting
+    title: Verify Side A Alignment
+    description: Ensure Side A faces upward and alignment notches engage fixture pins.
+    ai_validation: Face Verification
+    expected_result: Side A Oriented Correctly
+    timeout: 20
+    criteria: Alignment Notches Verified
+    warning_msg: Re-align filter Side A with fixture pins
     next_step: '5'
   - index: 5
-    title: Fit Rubber Mount onto Filter
-    description: Fit the glued rubber mount onto the air filter's center point, using
-      the temporary alignment pin as guide.
-    ai_validation: None
-    expected_result: Rubber Mount Fitted
-    timeout: 60
-    criteria: Mount Seated at Center Point (Pin-Guided)
-    warning_msg: Rubber mount not correctly seated — use alignment pin as guide
+    title: Insert Temporary Locator Pins (Side A)
+    description: Insert temporary guide pins into Side A corner brackets to prevent
+      displacement during mounting.
+    ai_validation: Face Verification
+    expected_result: Pins Inserted
+    timeout: 30
+    criteria: Side A Pins Detected in Holes
+    warning_msg: Insert locator pins into Side A corners
     next_step: '6'
   - index: 6
-    title: Remove Alignment Pin
-    description: Carefully remove the temporary alignment pin after the rubber mount
-      is seated.
-    ai_validation: None
-    expected_result: Pin Removed
-    timeout: 30
-    criteria: Alignment Pin Absent
-    warning_msg: Alignment pin still detected — remove before applying pressure
+    title: Apply Adhesive / Sealant (Side A)
+    description: Dispense industrial sealant along Side A perimeter channel.
+    ai_validation: Face Verification
+    expected_result: Sealant Bead Applied
+    timeout: 45
+    criteria: Dispensing Trajectory Verified
+    warning_msg: Apply sealant continuously along Side A channel
     next_step: '7'
   - index: 7
-    title: Apply Pressure to Bond Mount
-    description: Apply firm, even pressure on the mounted rubber to fully seat and
-      bond it to the filter.
-    ai_validation: None
-    expected_result: Mount Bonded
-    timeout: 45
-    criteria: Pressure Applied — Mount Seated Flat
-    warning_msg: Pressure step not completed — press firmly on rubber mount
+    title: Pick & Position Rubber Mount 1
+    description: Retrieve the first rubber mount from component tray A and align over
+      Side A bracket.
+    ai_validation: Face Verification
+    expected_result: Mount 1 in Hand
+    timeout: 25
+    criteria: Rubber Mount Detected in ROI
+    warning_msg: Retrieve rubber mount 1 from tray A
     next_step: '8'
   - index: 8
-    title: Quality Check
-    description: Confirm the rubber mount is centered, seated flat, and bonded with
-      no visible gap or misalignment.
-    ai_validation: Final Quality Inspection
-    expected_result: Pass — Mount Centered & Bonded
+    title: Press & Lock Rubber Mount 1
+    description: Press Mount 1 firmly into Side A bracket until locking tabs fully
+      engage (hold 2 sec).
+    ai_validation: Face Verification
+    expected_result: Mount 1 Locked
     timeout: 30
-    criteria: No Gap or Misalignment Detected
-    warning_msg: Quality check failed — rubber mount is not flat, centered, or bonded
-      correctly
+    criteria: Downward Force & Engagement Confirmed
+    warning_msg: Apply firm downward press until locked
     next_step: '9'
   - index: 9
-    title: Completion & Logging
-    description: Mark the fitting step complete, capture the final image, save logs,
-      and update production records.
-    ai_validation: Database & Screenshot Logging
-    expected_result: Logged
-    timeout: 10
-    criteria: Screenshot saved and DB entry written
-    warning_msg: Failed to write log records
+    title: Remove Temporary Locator Pins (Side A)
+    description: Remove temporary guide pins from Side A brackets and return to pin
+      holder.
+    ai_validation: Face Verification
+    expected_result: Side A Pins Removed
+    timeout: 25
+    criteria: Pins Cleared from Fixture
+    warning_msg: Remove guide pins from Side A before turning
+    next_step: '10'
+  - index: 10
+    title: Rotate Air Filter to Side B
+    description: Carefully lift and flip the air filter 180 degrees to expose Side
+      B for mounting.
+    ai_validation: Face Verification
+    expected_result: Filter Flipped to Side B
+    timeout: 30
+    criteria: 180 Degree Flip Trajectory Detected
+    warning_msg: Rotate filter 180 degrees to access Side B
+    next_step: '11'
+  - index: 11
+    title: Position & Verify Side B Alignment
+    description: Seat Side B onto fixture and verify orientation and pin registration.
+    ai_validation: Face Verification
+    expected_result: Side B Oriented Correctly
+    timeout: 20
+    criteria: Side B Alignment Verified
+    warning_msg: Ensure Side B is flat against workstation
+    next_step: '12'
+  - index: 12
+    title: Insert Temporary Locator Pins (Side B)
+    description: Insert temporary guide pins into Side B corner brackets.
+    ai_validation: Face Verification
+    expected_result: Side B Pins Inserted
+    timeout: 30
+    criteria: Side B Pins Detected
+    warning_msg: Insert locator pins into Side B corners
+    next_step: '13'
+  - index: 13
+    title: Apply Adhesive / Sealant (Side B)
+    description: Dispense industrial sealant along Side B perimeter channel.
+    ai_validation: Face Verification
+    expected_result: Sealant Bead Applied
+    timeout: 45
+    criteria: Dispensing Trajectory Verified
+    warning_msg: Apply sealant continuously along Side B channel
+    next_step: '14'
+  - index: 14
+    title: Pick & Position Rubber Mount 2
+    description: Retrieve second rubber mount from component tray B and align over
+      Side B bracket.
+    ai_validation: Face Verification
+    expected_result: Mount 2 in Hand
+    timeout: 25
+    criteria: Rubber Mount Detected in ROI
+    warning_msg: Retrieve rubber mount 2 from tray B
+    next_step: '15'
+  - index: 15
+    title: Press & Lock Rubber Mount 2
+    description: Press Mount 2 firmly into Side B bracket until locking tabs fully
+      engage.
+    ai_validation: Face Verification
+    expected_result: Mount 2 Locked
+    timeout: 30
+    criteria: Downward Force & Engagement Confirmed
+    warning_msg: Apply firm downward press until locked
+    next_step: '16'
+  - index: 16
+    title: Remove Temporary Locator Pins (Side B)
+    description: Remove temporary guide pins from Side B brackets.
+    ai_validation: Face Verification
+    expected_result: Side B Pins Removed
+    timeout: 25
+    criteria: Side B Pins Cleared
+    warning_msg: Remove guide pins from Side B
+    next_step: '17'
+  - index: 17
+    title: Verify Adhesive Bonding & Curing
+    description: Inspect both Side A and Side B mount seats for proper adhesive spread
+      and bond gap.
+    ai_validation: Face Verification
+    expected_result: Bond Line Verified
+    timeout: 30
+    criteria: Dual-Side Sealant Spread Validated
+    warning_msg: Check for incomplete adhesive coverage
+    next_step: '18'
+  - index: 18
+    title: Clean Workstation & Remove Fixtures
+    description: Clear tools, excess sealant wipes, and return locator pins to storage
+      rack.
+    ai_validation: None
+    expected_result: Work Area Clean
+    timeout: 20
+    criteria: Workstation Clear
+    warning_msg: Clear assembly area before final inspection
+    next_step: '19'
+  - index: 19
+    title: Dual-Side Final Quality Inspection & Logging
+    description: AI visual audit of Side A, Side B, mount seatings, adhesive seals,
+      and write log record.
+    ai_validation: Face Verification
+    expected_result: Full Pass & Logged
+    timeout: 30
+    criteria: Inspection Pass & Log Saved
+    warning_msg: Dual-side quality check failed
     next_step: End
 - assembly_id: air_filter_pack
   display_name: Air Filter Quality Check & Packing

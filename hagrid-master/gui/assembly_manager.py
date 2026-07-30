@@ -163,13 +163,34 @@ class AssemblyManager:
     def set_active_assembly(self, assembly_id: str) -> bool:
         """Set the active assembly and persist the choice.
 
-        Returns True on success, False if the id was not found.
+        Sets is_active=True for the specified assembly and is_active=False for all others,
+        persisting both app_settings.json and assemblies.yaml.
         """
         if not self._profile_by_id(assembly_id):
             print(f"[AssemblyManager] Unknown assembly_id: {assembly_id!r}")
             return False
         self._active_id = assembly_id
+        for p in self._profiles:
+            p["is_active"] = (p.get("assembly_id") == assembly_id)
+        _save_yaml(_ASSEMBLIES_YAML, {"assemblies": self._profiles})
         self._write_settings_active_id(assembly_id)
+        return True
+
+    def is_active_assembly(self, assembly_id: Optional[str] = None) -> bool:
+        """Return True if the specified (or currently active) assembly is marked is_active."""
+        target_id = assembly_id or self._active_id
+        profile = self._profile_by_id(target_id)
+        if not profile:
+            return False
+        return bool(profile.get("is_active", True))
+
+    def deactivate_assembly(self, assembly_id: str) -> bool:
+        """Deactivate an assembly, marking its is_active status to False."""
+        profile = self._profile_by_id(assembly_id)
+        if not profile:
+            return False
+        profile["is_active"] = False
+        _save_yaml(_ASSEMBLIES_YAML, {"assemblies": self._profiles})
         return True
 
     def get_sop_steps(self, assembly_id: Optional[str] = None) -> list:

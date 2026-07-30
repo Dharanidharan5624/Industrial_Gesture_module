@@ -2,16 +2,6 @@
 
 from __future__ import annotations
 
-# Monkey patch protobuf MessageFactory to prevent MediaPipe import error in newer protobuf versions.
-try:
-    from google.protobuf import message_factory
-    if not hasattr(message_factory.MessageFactory, "GetPrototype"):
-        def GetPrototype(self, descriptor):
-            return self.GetMessageClass(descriptor)
-        message_factory.MessageFactory.GetPrototype = GetPrototype
-except Exception as exc:
-    print(f"Failed to apply protobuf patch: {exc}")
-
 import argparse
 import os
 import sys

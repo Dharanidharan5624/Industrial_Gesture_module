@@ -1,14 +1,20 @@
-"""Real-time gesture detection demo.
+"""Real-time gesture detection via MediaPipe + geometric rule-based classifier.
 
-Uses MediaPipe Hands for landmark extraction and hand localisation, then
-classifies the gesture with either a deep-learning backbone (when a
-checkpoint is available) or the geometric rule-based fallback classifier.
-
-Usage:
-    python demo.py -p configs/gesture.yaml --landmarks
+Provides ``GestureDetector`` and ``draw_results`` consumed by camera_worker.py.
+Degrades gracefully (no hand detection) when MediaPipe is unavailable.
 """
 
 from __future__ import annotations
+
+# Monkey patch protobuf MessageFactory to prevent MediaPipe import error in newer protobuf versions.
+try:
+    from google.protobuf import message_factory
+    if not hasattr(message_factory.MessageFactory, "GetPrototype"):
+        def GetPrototype(self, descriptor):
+            return self.GetMessageClass(descriptor)
+        message_factory.MessageFactory.GetPrototype = GetPrototype
+except Exception as exc:
+    print(f"Failed to apply protobuf patch: {exc}")
 
 import argparse
 import os
@@ -23,267 +29,245 @@ import yaml
 
 import constants
 from custom_utils.gesture_classifier import (
-    LandmarkFrame,
     classify_gesture,
-    finger_states,
     handedness_label,
 )
-from custom_utils.utils import frame_to_tensor, load_checkpoint, topk_prediction
-from models.gesture_net import GestureNet
 
+# ---------------------------------------------------------------------------
+# Optional MediaPipe import
+# ---------------------------------------------------------------------------
 try:
-    import mediapipe as mp  # type: ignore
+    import mediapipe as mp          # type: ignore
+    _MP_HANDS = mp.solutions.hands
+    _MP_DRAWING = mp.solutions.drawing_utils
     _MP_OK = True
-except Exception:  # pragma: no cover
+except Exception:                   # pragma: no cover
     mp = None
+    _MP_HANDS = None
+    _MP_DRAWING = None
     _MP_OK = False
 
-try:
-    import torch
-    _TORCH_OK = True
-except Exception:  # pragma: no cover
-    torch = None
-    _TORCH_OK = False
+# Sentinel used by ScrewMonitor / status panel when no hand is present.
+_SENTINEL = "--"
 
+# How many consecutive "no hand" frames before we emit no_gesture.
+_GRACE_FRAMES = 3
+
+
+# ---------------------------------------------------------------------------
+# Data class emitted by GestureDetector per hand
+# ---------------------------------------------------------------------------
 
 @dataclass
-class GestureResult:
+class DetectionResult:
     gesture: str
     confidence: float
-    handedness: str
-    bbox: Optional[Tuple[int, int, int, int]]
-    landmarks: Optional[np.ndarray]
+    handedness: str          # "Left" or "Right" (camera-corrected)
+    landmarks: np.ndarray    # shape (21, 3) in pixel coords
+    bbox: Tuple[int, int, int, int]   # (x1, y1, x2, y2)
 
+
+# ---------------------------------------------------------------------------
+# GestureDetector
+# ---------------------------------------------------------------------------
 
 class GestureDetector:
-    """Orchestrates MediaPipe + DL/ geometric classification."""
+    """Wraps MediaPipe Hands + geometric classifier.
+
+    Falls back to returning an empty list (no detection) when MediaPipe is
+    not installed or initialisation fails, so the rest of the pipeline can
+    keep running without crashing.
+    """
 
     def __init__(self, config: dict):
-        self.config = config
-        self.stable_frames = config.get("detection", {}).get("stable_frames", 3)
-        self.fallback_threshold = config.get("detection", {}).get("fallback_threshold", 0.4)
-        self.conf_threshold = config.get("detection", {}).get("confidence_threshold", 0.6)
-        self.show_landmarks = config.get("ui", {}).get("show_landmarks", True)
+        mp_cfg = config.get("mediapipe", {})
+        self._min_det  = float(mp_cfg.get("min_detection_confidence", 0.50))
+        self._min_trk  = float(mp_cfg.get("min_tracking_confidence",  0.50))
+        self._max_hands = int(mp_cfg.get("max_num_hands", 2))
+        self._mirror    = bool(mp_cfg.get("mirror", True))
 
-        # Deep learning backbone (optional).
-        model_cfg = config.get("model", {})
-        self.net: Optional[GestureNet] = None
-        if _TORCH_OK and model_cfg.get("name"):
-            self.net = GestureNet(
-                model_name=model_cfg["name"],
-                checkpoint=model_cfg.get("checkpoint") or None,
-                device="cuda" if _TORCH_OK and torch.cuda.is_available() else "cpu",
-                pretrained=False,
-            )
-
-        # MediaPipe Hands.
-        self.hands = None
+        self._hands = None
         if _MP_OK:
-            mp_cfg = config.get("mediapipe", {})
-            self.hands = mp.solutions.hands.Hands(
-                static_image_mode=mp_cfg.get("static_image_mode", False),
-                max_num_hands=mp_cfg.get("max_num_hands", 2),
-                model_complexity=mp_cfg.get("model_complexity", 1),
-                min_detection_confidence=mp_cfg.get("min_detection_confidence", 0.5),
-                min_tracking_confidence=mp_cfg.get("min_tracking_confidence", 0.5),
-            )
-        self._stable: List[str] = []
+            try:
+                self._hands = _MP_HANDS.Hands(
+                    model_complexity=0,
+                    static_image_mode=False,
+                    max_num_hands=self._max_hands,
+                    min_detection_confidence=self._min_det,
+                    min_tracking_confidence=self._min_trk,
+                )
+            except Exception as exc:
+                print(f"[GestureDetector] MediaPipe init failed: {exc}")
+                self._hands = None
 
-    def detect(self, frame: np.ndarray) -> List[GestureResult]:
-        results: List[GestureResult] = []
-        if not _MP_OK or self.hands is None:
-            return results
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_results = self.hands.process(rgb)
-        if not mp_results.multi_hand_landmarks:
-            return results
+        self._no_result_count = 0
+
+    def detect(self, frame: np.ndarray) -> List[DetectionResult]:
+        """Run detection on a BGR frame.  Returns a (possibly empty) list."""
+        if self._hands is None or frame is None:
+            return []
+
         h, w = frame.shape[:2]
-        for idx, hand_lms in enumerate(mp_results.multi_hand_landmarks):
-            lm = np.array([(p.x * w, p.y * h, p.z) for p in hand_lms.landmark], dtype=np.float32)
-            handed = "Right"
-            if mp_results.multi_handedness and idx < len(mp_results.multi_handedness):
-                mp_label = handedness_label(mp_results.multi_handedness[idx].classification[0].label)
-                # MediaPipe labels from subject's PoV (mirrored). Flip for real-world camera view.
-                handed = "Left" if mp_label == "Right" else "Right"
-            bbox = self._bbox(lm, w, h)
-            gesture, conf = self._classify(frame, lm, bbox)
-            results.append(GestureResult(gesture, conf, handed, bbox, lm))
+        # MediaPipe expects RGB; optionally flip for front-facing camera
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        if self._mirror:
+            rgb = cv2.flip(rgb, 1)
+
+        try:
+            mp_results = self._hands.process(rgb)
+        except Exception:
+            return []
+
+        if not mp_results.multi_hand_landmarks:
+            return []
+
+        results: List[DetectionResult] = []
+        multi_lm = mp_results.multi_hand_landmarks
+        multi_hand = mp_results.multi_handedness or []
+
+        for i, hand_lm in enumerate(multi_lm):
+            # ── landmark array (21, 3) in pixel coordinates ──────────────
+            lm_arr = np.array(
+                [[lm.x * w, lm.y * h, lm.z * w] for lm in hand_lm.landmark],
+                dtype=np.float32,
+            )
+            # Undo the flip on x so coordinates are in the *original* frame's
+            # pixel space, not the mirrored inference space.
+            if self._mirror:
+                lm_arr[:, 0] = w - lm_arr[:, 0]
+
+            # ── bounding box ─────────────────────────────────────────────
+            pad = 12
+            x1 = max(0,     int(lm_arr[:, 0].min()) - pad)
+            y1 = max(0,     int(lm_arr[:, 1].min()) - pad)
+            x2 = min(w - 1, int(lm_arr[:, 0].max()) + pad)
+            y2 = min(h - 1, int(lm_arr[:, 1].max()) + pad)
+
+            # ── handedness (camera-corrected) ─────────────────────────────
+            if i < len(multi_hand):
+                raw_side = multi_hand[i].classification[0].label
+                # MediaPipe labels are from the *selfie* perspective.
+                # If we mirrored the frame before inference, the labels are
+                # already correct; if not, we need to invert them.
+                side = raw_side if self._mirror else (
+                    "Right" if raw_side == "Left" else "Left"
+                )
+            else:
+                side = "Right"
+
+            # ── gesture classification ────────────────────────────────────
+            gesture = classify_gesture(lm_arr)
+            conf = 0.85   # geometric classifier doesn't produce a probability
+
+            results.append(DetectionResult(
+                gesture=gesture,
+                confidence=conf,
+                handedness=side,
+                landmarks=lm_arr,
+                bbox=(x1, y1, x2, y2),
+            ))
+
         return results
 
-    def _classify(self, frame: np.ndarray, lm: np.ndarray, bbox: Optional[Tuple[int, int, int, int]]) -> Tuple[str, float]:
-        # Try the DL backbone first when available.
-        if self.net is not None and self.net.available and bbox is not None:
-            x1, y1, x2, y2 = bbox
-            crop = frame[y1:y2, x1:x2]
-            if crop.size > 0:
-                res = self.net.predict(crop)
-                if res is not None:
-                    idx, prob, name = res
-                    if prob / 100.0 >= self.fallback_threshold:
-                        return name, prob
-        # Geometric fallback.
-        gesture = classify_gesture(lm)
-        return gesture, 95.0
-
-    @staticmethod
-    def _bbox(lm: np.ndarray, w: int, h: int) -> Tuple[int, int, int, int]:
-        xs = np.clip(lm[:, 0], 0, w - 1).astype(int)
-        ys = np.clip(lm[:, 1], 0, h - 1).astype(int)
-        pad = 20
-        return (max(int(xs.min()) - pad, 0), max(int(ys.min()) - pad, 0),
-                min(int(xs.max()) + pad, w), min(int(ys.max()) + pad, h))
-
-    # -- smoothing ---------------------------------------------------------
-    def smooth(self, gesture: str) -> str:
-        self._stable.append(gesture)
-        if len(self._stable) > self.stable_frames:
-            self._stable.pop(0)
-        if not self._stable:
-            return gesture
-        return max(set(self._stable), key=self._stable.count)
+    def close(self) -> None:
+        if self._hands is not None:
+            self._hands.close()
+            self._hands = None
 
 
+# ---------------------------------------------------------------------------
+# Overlay drawing
+# ---------------------------------------------------------------------------
 
-# Friendly display names and sub-descriptions for each gesture.
-GESTURE_DISPLAY: dict = {
-    "palm":          ("Palm",          "Open"),
-    "fist":          ("Fist",          "Closed"),
-    "one":           ("One",           "Point Up"),
-    "peace":         ("Peace",         "V Sign"),
-    "three":         ("Three",         "3 Fingers"),
-    "four":          ("Four",          "4 Fingers"),
-    "ok":            ("OK",            "Circle"),
-    "like":          ("Like",          "Thumbs Up"),
-    "dislike":       ("Dislike",       "Thumbs Down"),
-    "rock":          ("Rock",          "Horns"),
-    "call":          ("Call",          "Phone Sign"),
-    "middle_finger": ("Mid. Finger",   "Vertical"),
-    "little_finger": ("Pinkie",        "Little Finger"),
-    "thumb_index":   ("Gun",           "Thumb Index"),
-    "no_gesture":    ("No Gesture",    ""),
-}
+# Landmark connection topology (mirrors MediaPipe's HAND_CONNECTIONS)
+_HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (0, 9), (9, 10), (10, 11), (11, 12),
+    (0, 13), (13, 14), (14, 15), (15, 16),
+    (0, 17), (17, 18), (18, 19), (19, 20),
+    (5, 9), (9, 13), (13, 17),
+]
 
-# BGR colour per gesture for the banner
-GESTURE_COLORS: dict = {
-    "palm":          (180, 40, 130),
-    "fist":          (50,  80, 200),
-    "one":           (0,  160, 220),
-    "peace":         (0,  180, 80),
-    "three":         (0,  140, 200),
-    "four":          (20, 120, 200),
-    "ok":            (0,  200, 120),
-    "like":          (30, 180, 30),
-    "dislike":       (0,   60, 200),
-    "rock":          (120, 20, 200),
-    "call":          (200, 80, 0),
-    "middle_finger": (0,   40, 200),
-    "little_finger": (200, 100, 0),
-    "thumb_index":   (180, 40, 0),
-    "no_gesture":    (80,  80, 80),
-}
+_COLOR_LANDMARK  = (148, 0, 211)   # purple dots
+_COLOR_CONNECTION = (100, 0, 180)  # darker purple lines
+_COLOR_BBOX       = (0, 200, 0)    # green bounding box
+_COLOR_WHITE      = (255, 255, 255)
 
 
-def _draw_gesture_banner(
+def draw_results(
     frame: np.ndarray,
-    text: str,
-    cx: int,
-    cy: int,
-    color_bgr: tuple,
-) -> None:
-    """Draw a pill-shaped semi-transparent banner centred at (cx, cy)."""
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.62
-    thickness = 2
+    results: List[DetectionResult],
+    show_landmarks: bool = True,
+) -> np.ndarray:
+    """Draw bounding boxes, gesture labels, and (optionally) landmarks."""
+    out = frame.copy()
+    h, w = out.shape[:2]
 
-    (tw, th), baseline = cv2.getTextSize(text, font, font_scale, thickness)
-    pad_x, pad_y = 14, 8
-    x1 = cx - tw // 2 - pad_x
-    y1 = cy - th - pad_y
-    x2 = cx + tw // 2 + pad_x
-    y2 = cy + pad_y
+    for res in results:
+        x1, y1, x2, y2 = res.bbox
 
-    # Clamp to frame bounds
-    h, w = frame.shape[:2]
-    x1, y1 = max(x1, 0), max(y1, 0)
-    x2, y2 = min(x2, w - 1), min(y2, h - 1)
+        # Bounding box
+        cv2.rectangle(out, (x1, y1), (x2, y2), _COLOR_BBOX, 2)
 
-    # Semi-transparent filled rectangle
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x1, y1), (x2, y2), color_bgr, -1)
-    cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
+        # Label badge
+        label = f"{res.handedness} | {res.gesture} ({res.confidence:.2f})"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        cv2.rectangle(out, (x1, y1 - th - 8), (x1 + tw + 6, y1), (30, 30, 30), -1)
+        cv2.putText(out, label, (x1 + 3, y1 - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, _COLOR_WHITE, 1, cv2.LINE_AA)
 
-    # White text
-    tx = cx - tw // 2
-    ty = y2 - pad_y
-    cv2.putText(frame, text, (tx, ty), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+        if show_landmarks and res.landmarks is not None:
+            lm = res.landmarks
+            # Connections
+            for a, b in _HAND_CONNECTIONS:
+                pt_a = (int(np.clip(lm[a, 0], 0, w - 1)),
+                        int(np.clip(lm[a, 1], 0, h - 1)))
+                pt_b = (int(np.clip(lm[b, 0], 0, w - 1)),
+                        int(np.clip(lm[b, 1], 0, h - 1)))
+                cv2.line(out, pt_a, pt_b, _COLOR_CONNECTION, 1, cv2.LINE_AA)
+            # Dots
+            for idx in range(21):
+                px = int(np.clip(lm[idx, 0], 0, w - 1))
+                py = int(np.clip(lm[idx, 1], 0, h - 1))
+                cv2.circle(out, (px, py), 3, _COLOR_LANDMARK, -1, cv2.LINE_AA)
 
-
-def draw_results(frame: np.ndarray, results: List[GestureResult], show_landmarks: bool = True) -> np.ndarray:
-    for r in results:
-        gesture = r.gesture or "no_gesture"
-        color = GESTURE_COLORS.get(gesture, (100, 100, 100))
-
-        # --- Bounding box ---
-        if r.bbox is not None:
-            x1, y1, x2, y2 = r.bbox
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-
-            # --- Pill banner label ---
-            disp_name, description = GESTURE_DISPLAY.get(gesture, (gesture.replace("_", " ").title(), ""))
-            hand_side = r.handedness  # "Left" or "Right"
-            if description:
-                label_text = f"{hand_side} Hand: {disp_name} ({description})"
-            else:
-                label_text = f"{hand_side} Hand: {disp_name}"
-
-            banner_cx = (x1 + x2) // 2
-            banner_cy = max(y1 - 16, 30)
-            _draw_gesture_banner(frame, label_text, banner_cx, banner_cy, color)
-
-        # --- Landmarks (dots on each joint) ---
-        if show_landmarks and r.landmarks is not None:
-            for pt in r.landmarks:
-                cv2.circle(frame, (int(pt[0]), int(pt[1])), 4, (255, 255, 255), -1)
-                cv2.circle(frame, (int(pt[0]), int(pt[1])), 3, color, -1)
-
-    return frame
+    return out
 
 
+# ---------------------------------------------------------------------------
+# Standalone demo runner (optional, for testing without the GUI)
+# ---------------------------------------------------------------------------
 
-
-def run(config_path: str, source: int = 0, landmarks: bool = False) -> None:
+def _run_demo(config_path: str, source: int) -> None:
     with open(config_path) as fh:
         config = yaml.safe_load(fh)
+
     detector = GestureDetector(config)
     cap = cv2.VideoCapture(source)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.get("camera", {}).get("width", 640))
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.get("camera", {}).get("height", 480))
-    print("[demo] press 'q' to quit.")
-    prev = time.time()
-    while True:
+    if not cap.isOpened():
+        print(f"[demo] Could not open camera {source}")
+        return
+
+    while cap.isOpened():
         ok, frame = cap.read()
         if not ok:
             break
         results = detector.detect(frame)
-        frame = draw_results(frame, results, show_landmarks=landmarks)
-        fps = 1.0 / max(time.time() - prev, 1e-6)
-        prev = time.time()
-        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, constants.COLOR_GREEN, 2)
-        cv2.imshow("HAGRID Gesture Demo", frame)
+        if results:
+            frame = draw_results(frame, results, show_landmarks=True)
+        cv2.imshow("Gesture Demo", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
+
+    detector.close()
     cap.release()
     cv2.destroyAllWindows()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="HAGRID real-time gesture demo")
-    parser.add_argument("-p", "--config", default="configs/gesture.yaml", help="Path to gesture YAML config")
-    parser.add_argument("--source", type=int, default=0, help="Camera index")
-    parser.add_argument("--landmarks", action="store_true", help="Draw MediaPipe landmarks")
-    args = parser.parse_args()
-    run(args.config, source=args.source, landmarks=args.landmarks)
-
-
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Gesture detection demo")
+    parser.add_argument("-p", "--config", default="configs/gesture.yaml")
+    parser.add_argument("--source", type=int, default=0)
+    args = parser.parse_args()
+    _run_demo(args.config, args.source)

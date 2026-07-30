@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import sys
-import threading
 import time
 from dataclasses import asdict
 from typing import Optional
@@ -59,12 +58,6 @@ class _suppress_stderr:
 # momentarily drops the device, so a hot-plug blip doesn't kill the session.
 _MAX_CONSECUTIVE_READ_FAILURES = 20
 _READ_RETRY_DELAY_SEC = 0.05
-_MAX_CAPTURE_RECOVERY_ATTEMPTS = 3
-_CAPTURE_RECOVERY_DELAY_SEC = 0.35
-_LIVE_TARGET_FPS = 30.0
-_AI_TARGET_FPS = 6.0
-_FAST_LIVE_MAX_WIDTH = 1280
-_FAST_LIVE_MAX_HEIGHT = 720
 
 # A camera that just opened often isn't ready to deliver a real frame
 # instantly (auto-exposure/white-balance settling, driver warm-up). Retry
@@ -220,13 +213,6 @@ class CameraWorker(QtCore.QThread):
         self.rotation: int = 0          # 0 | 90 | 180 | 270
         self.confidence_threshold: float = 0.50
         self.rot_sensitivity: float = 5.0
-        self.fast_live_mode = True
-        self.live_display_fps = _LIVE_TARGET_FPS
-        self.ai_process_fps = _AI_TARGET_FPS
-        self._latest_frame: Optional[np.ndarray] = None
-        self._latest_frame_lock = threading.Lock()
-        self._ai_lock = threading.Lock()
-        self._ai_thread: Optional[threading.Thread] = None
 
         # --- Frame-drop coalescing (fixes growing live-view delay) --------
         # Without this, frame_ready.emit() fires every loop regardless of
@@ -249,26 +235,6 @@ class CameraWorker(QtCore.QThread):
         """Call from the UI thread's state_ready slot once it has finished
         using the snapshot, so the worker can safely emit the next one."""
         self._state_pending = False
-
-    def _target_capture_size(self, config: dict) -> tuple[int, int]:
-        cfg_cam = config.get("camera", {})
-        w = int(self.cam_width or cfg_cam.get("width", 640))
-        h = int(self.cam_height or cfg_cam.get("height", 480))
-        if self.fast_live_mode and (w > _FAST_LIVE_MAX_WIDTH or h > _FAST_LIVE_MAX_HEIGHT):
-            scale = min(_FAST_LIVE_MAX_WIDTH / max(1, w), _FAST_LIVE_MAX_HEIGHT / max(1, h))
-            w = max(320, int(w * scale))
-            h = max(240, int(h * scale))
-        return w, h
-
-    def _rotate_frame(self, frame: np.ndarray) -> np.ndarray:
-        rot = self.rotation
-        if rot == 90:
-            return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-        if rot == 180:
-            return cv2.rotate(frame, cv2.ROTATE_180)
-        if rot == 270:
-            return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        return frame
 
     # -- lifecycle ---------------------------------------------------------
     def run(self) -> None:
@@ -308,12 +274,10 @@ class CameraWorker(QtCore.QThread):
             self.error.emit(msg)
             self.camera_unavailable.emit(self.source, available)
             return
-        w, h = self._target_capture_size(config)
-        try:
-            self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-            self._cap.set(cv2.CAP_PROP_FPS, _LIVE_TARGET_FPS)
-        except Exception:
-            pass
+        # Use worker-level overrides if set, else fall back to YAML
+        cfg_cam = config.get("camera", {})
+        w = self.cam_width or cfg_cam.get("width", 640)
+        h = self.cam_height or cfg_cam.get("height", 480)
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
         self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Zero video queue latency
@@ -345,45 +309,20 @@ class CameraWorker(QtCore.QThread):
         )
         self._compliance.enabled = self.compliance_enabled
         self._running = True
-        self._latest_frame = None
-        self._ai_thread = threading.Thread(
-            target=self._ai_loop,
-            name=f"CameraAI-{self.source}",
-            daemon=True,
-        )
-        self._ai_thread.start()
 
         prev = time.time()
-        last_emit = 0.0
-        display_fps = 0.0
         consecutive_failures = 0
         while self._running:
-            ok, frame = self._cap.read()
+            # Flush any stale queued frames in buffer so live feed has zero latency
+            for _ in range(2):
+                if not self._cap.grab():
+                    break
+            ok, frame = self._cap.retrieve()
+            if not ok or frame is None:
+                ok, frame = self._cap.read()
             if not ok or frame is None:
                 consecutive_failures += 1
                 if consecutive_failures >= _MAX_CONSECUTIVE_READ_FAILURES:
-                    recovered = False
-                    for _attempt in range(_MAX_CAPTURE_RECOVERY_ATTEMPTS):
-                        if not self._running:
-                            break
-                        if self._cap is not None:
-                            self._cap.release()
-                            self._cap = None
-                        time.sleep(_CAPTURE_RECOVERY_DELAY_SEC)
-                        self._cap = _open_capture(self.source)
-                        if self._cap is not None and self._cap.isOpened():
-                            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-                            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-                            self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                            recovered = True
-                            break
-
-                    if recovered:
-                        consecutive_failures = 0
-                        continue
-                    if not self._running:
-                        break
-
                     self.error.emit(
                         f"Camera {self.source} stopped responding "
                         f"(likely unplugged or released by the OS)."
@@ -394,114 +333,86 @@ class CameraWorker(QtCore.QThread):
                 continue
             consecutive_failures = 0
 
-            with self._latest_frame_lock:
-                self._latest_frame = frame.copy()
+            # Gesture detection (adds overlay on the same frame). Runs
+            # whenever either "Show Landmarks Overlay" or "Gesture
+            # Detection" is checked — both need the same underlying hand
+            # detection, so the overlay checkbox alone is enough to see the
+            # 21 landmark points + the recognized sign name.
+            gesture, conf, handed = "no_gesture", 0.0, ""
+            results = []
+            # Also run hand detect when compliance is on — earbuds-in-palm needs landmarks.
+            if self.gesture_enabled or self.show_landmarks or self.compliance_enabled:
+                results = self._detector.detect(frame)
+                if results:
+                    top = results[0]
+                    gesture, conf, handed = top.gesture, top.confidence, top.handedness
+                    from demo import draw_results
 
-            now = time.time()
-            if now - prev > 0:
-                display_fps = (display_fps * 0.85) + ((1.0 / (now - prev)) * 0.15)
-            prev = now
+                    # Only draw purple landmarks when the overlay checkbox is on.
+                    if self.show_landmarks or self.gesture_enabled:
+                        frame = draw_results(frame, results, show_landmarks=self.show_landmarks)
+                    self.gesture_ready.emit(gesture, conf, handed)
+                else:
+                    self.gesture_ready.emit("no_gesture", 0.0, "")
 
-            min_emit_gap = 1.0 / max(1.0, float(self.live_display_fps))
-            if now - last_emit < min_emit_gap:
-                time.sleep(0.001)
-                continue
-            if self._frame_pending:
-                time.sleep(0.001)
-                continue
+            # Industrial monitoring.
+            landmarks = results[0].landmarks if results else None
+            if self.monitor_enabled and self._monitor is not None:
+                if results:
+                    top = results[0]
+                    frame = self._monitor.process(frame, top.landmarks, top.handedness)
+                else:
+                    self._monitor.clear_hand()
+                    frame = self._monitor.process(frame, detect_hand=False)
+                if not self._state_pending:
+                    self._state_pending = True
+                    self.state_ready.emit(self._state_snapshot(gesture, conf, handed))
+            else:
+                # Stub mode or monitor disabled — emit sentinel state so UI shows --
+                if self._monitor is not None:
+                    self._monitor.clear_hand()
+                if not self._state_pending:
+                    self._state_pending = True
+                    self.state_ready.emit(self._state_snapshot("no_gesture", 0.0, ""))
 
-            display_frame = frame.copy()
-            cv2.putText(
-                display_frame,
-                f"LIVE FPS: {display_fps:.1f}",
-                (display_frame.shape[1] - 175, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 220, 0),
-                2,
-            )
-            display_frame = self._rotate_frame(display_frame)
+            # Operator compliance / safety monitoring (parallel to screw SOP).
+            if self._compliance is not None and self.compliance_enabled:
+                all_hand_lms = [res.landmarks for res in results] if results else []
+                ctx = {
+                    "landmarks": landmarks,
+                    "hand_landmarks": all_hand_lms,
+                    "hand_detected": bool(results),
+                    "gesture": gesture,
+                }
+                cstate = self._compliance.process(frame, ctx)
+                self.compliance_ready.emit(cstate.to_dict())
 
-            # Skip display emits while the GUI is still painting the previous
-            # one, so the UI always shows the newest frame instead of building
-            # a delayed queue.
+            fps = 1.0 / max(time.time() - prev, 1e-6)
+            prev = time.time()
+            # FPS first (top-right); compliance alerts are drawn under this row.
+            cv2.putText(frame, f"FPS: {fps:.1f}", (frame.shape[1] - 130, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 0), 2)
+
+            # Apply rotation if set
+            rot = self.rotation
+            if rot == 90:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            elif rot == 180:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
+            elif rot == 270:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+            # Skip the emit (not the pipeline) if the UI hasn't finished with
+            # the last frame yet — this is what stops the backlog from
+            # growing. Gesture/monitor/compliance processing above still ran
+            # on this frame, so rotation counts and compliance state stay
+            # accurate; only the on-screen video drops a frame here and there
+            # instead of drifting further behind every loop.
             if not self._frame_pending:
                 self._frame_pending = True
-                self.frame_ready.emit(display_frame)
-                last_emit = now
+                self.frame_ready.emit(frame)
 
-        self._running = False
-        if self._ai_thread is not None and self._ai_thread.is_alive():
-            self._ai_thread.join(timeout=2.0)
         self._cleanup()
-
-    def _ai_loop(self) -> None:
-        min_gap = 1.0 / max(1.0, float(self.ai_process_fps))
-        last_process = 0.0
-        while self._running:
-            now = time.time()
-            remaining = min_gap - (now - last_process)
-            if remaining > 0:
-                time.sleep(min(remaining, 0.02))
-                continue
-
-            with self._latest_frame_lock:
-                frame = None if self._latest_frame is None else self._latest_frame.copy()
-            if frame is None:
-                time.sleep(0.01)
-                continue
-
-            last_process = time.time()
-            try:
-                with self._ai_lock:
-                    self._process_ai_frame(frame)
-            except Exception as exc:
-                self.error.emit(f"AI processing error: {exc}")
-
-    def _process_ai_frame(self, frame: np.ndarray) -> None:
-        gesture, conf, handed = "no_gesture", 0.0, ""
-        results = []
-
-        # Also run hand detect when compliance is on — earbuds-in-palm needs landmarks.
-        if self._detector is not None and (
-            self.gesture_enabled or self.show_landmarks or self.compliance_enabled
-        ):
-            results = self._detector.detect(frame)
-            if results:
-                top = results[0]
-                gesture, conf, handed = top.gesture, top.confidence, top.handedness
-                self.gesture_ready.emit(gesture, conf, handed)
-            else:
-                self.gesture_ready.emit("no_gesture", 0.0, "")
-
-        landmarks = results[0].landmarks if results else None
-        if self.monitor_enabled and self._monitor is not None:
-            if results:
-                top = results[0]
-                self._monitor.process(frame, top.landmarks, top.handedness)
-            else:
-                self._monitor.clear_hand()
-                self._monitor.process(frame, detect_hand=False)
-            if not self._state_pending:
-                self._state_pending = True
-                self.state_ready.emit(self._state_snapshot(gesture, conf, handed))
-        else:
-            if self._monitor is not None:
-                self._monitor.clear_hand()
-            if not self._state_pending:
-                self._state_pending = True
-                self.state_ready.emit(self._state_snapshot("no_gesture", 0.0, ""))
-
-        if self._compliance is not None and self.compliance_enabled:
-            all_hand_lms = [res.landmarks for res in results] if results else []
-            ctx = {
-                "landmarks": landmarks,
-                "hand_landmarks": all_hand_lms,
-                "hand_detected": bool(results),
-                "gesture": gesture,
-            }
-            cstate = self._compliance.process(frame, ctx)
-            self.compliance_ready.emit(cstate.to_dict())
 
     def _state_snapshot(self, gesture: str, conf: float, handed: str) -> dict:
         if self._monitor is not None:
@@ -548,9 +459,8 @@ class CameraWorker(QtCore.QThread):
         self.wait(3000)
 
     def reset_monitor(self) -> None:
-        with self._ai_lock:
-            if self._monitor is not None:
-                self._monitor.reset()
+        if self._monitor is not None:
+            self._monitor.reset()
 
     def update_assembly(self, assembly_id: str, detection_mode: str,
                         turn_target: float = 2.5, align_threshold_px: int = 50) -> None:
@@ -563,27 +473,18 @@ class CameraWorker(QtCore.QThread):
     def apply_compliance_settings(self, settings: dict) -> None:
         self._compliance_settings = settings
         self.compliance_enabled = bool(settings.get("enabled", True))
-        with self._ai_lock:
-            if self._compliance is not None:
-                self._compliance.apply_settings(settings)
+        if self._compliance is not None:
+            self._compliance.apply_settings(settings)
 
     def set_operator_info(self, operator_id: str, operator_name: str = "") -> None:
         self.worker_id = operator_id
         self.operator_name = operator_name
-        with self._ai_lock:
-            if self._compliance is not None:
-                self._compliance.set_operator(operator_id, operator_name)
-            if self._monitor is not None:
-                self._monitor.worker_id = operator_id
+        if self._compliance is not None:
+            self._compliance.set_operator(operator_id, operator_name)
+        if self._monitor is not None:
+            self._monitor.worker_id = operator_id
 
     def _cleanup(self) -> None:
         if self._cap is not None:
             self._cap.release()
             self._cap = None
-        if self._detector is not None and not (
-            self._ai_thread is not None and self._ai_thread.is_alive()
-        ):
-            self._detector.close()
-            self._detector = None
-        if self._monitor is not None:
-            self._monitor.reset()

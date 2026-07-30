@@ -28,12 +28,14 @@ class CameraView(QtWidgets.QWidget):
     def update_frame(self, frame: np.ndarray) -> None:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, _ = rgb.shape
-        qimg = QtGui.QImage(rgb.data, w, h, w * 3, QtGui.QImage.Format_RGB888).copy()
+        qimg = QtGui.QImage(rgb.data, w, h, w * 3, QtGui.QImage.Format_RGB888)
         new_pixmap = QtGui.QPixmap.fromImage(qimg)
+        # Invalidate scale cache only when frame dimensions actually change
+        if (self._pixmap is None or
+                new_pixmap.width() != (self._pixmap.width() if self._pixmap else 0) or
+                new_pixmap.height() != (self._pixmap.height() if self._pixmap else 0)):
+            self._scaled_cache = None
         self._pixmap = new_pixmap
-        # Every camera frame has new pixels even though the dimensions usually
-        # stay identical, so the scaled paint cache must be rebuilt per frame.
-        self._scaled_cache = None
         self._placeholder = False
         self.update()
 

@@ -88,7 +88,7 @@ assemblies:
 - assembly_id: air_filter_fit
   display_name: Air Filter Check & Fitting
   detection_mode: air_filter_monitor
-  is_active: true
+  is_active: false
   target_params:
     pressing_duration_sec: 2.0
     work_area_roi:

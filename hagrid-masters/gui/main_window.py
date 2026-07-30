@@ -2306,7 +2306,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_cam_btn = QtWidgets.QPushButton("Refresh Cameras")
         self.refresh_cam_btn.setObjectName("secondaryBtn")
         self.refresh_cam_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.refresh_cam_btn.clicked.connect(lambda: self._refresh_camera_list())
+        self.refresh_cam_btn.clicked.connect(self._refresh_camera_list)
         controls_layout.addWidget(self.refresh_cam_btn)
 
         self.test_cam_btn = QtWidgets.QPushButton("Test Camera")
@@ -5394,13 +5394,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # -- Apply to live worker without full restart if possible ----------
         if self.worker is not None:
-            live_w, live_h = w, h
-            if live_w > 1280 or live_h > 720:
-                scale = min(1280 / max(1, live_w), 720 / max(1, live_h))
-                live_w = max(320, int(live_w * scale))
-                live_h = max(240, int(live_h * scale))
-            self.worker.cam_width          = live_w
-            self.worker.cam_height         = live_h
+            self.worker.cam_width          = w
+            self.worker.cam_height         = h
             self.worker.rotation           = rot
             self.worker.confidence_threshold = conf
             self.worker.rot_sensitivity    = sens
@@ -5510,42 +5505,6 @@ class MainWindow(QtWidgets.QMainWindow):
         active_source = None
         if self.worker is not None and self.worker.isRunning():
             active_source = self.source
-
-        # While a live feed is running, keep the current VideoCapture fully
-        # untouched. Some camera drivers briefly reset or steal the active
-        # device when another thread probes adjacent indices, which makes the
-        # worker think the camera disconnected and closes the feed. Refreshing
-        # during live mode therefore only preserves the known list and marks
-        # the active camera as in-use; stop the feed first for a deep scan.
-        if active_source is not None:
-            available: list[int] = []
-            for row in range(self.source_combo.count()):
-                data = self.source_combo.itemData(row)
-                if data is not None and data != -1:
-                    try:
-                        idx = int(data)
-                    except (TypeError, ValueError):
-                        continue
-                    if idx not in available:
-                        available.append(idx)
-            if active_source not in available:
-                available.append(active_source)
-
-            self.source_combo.blockSignals(True)
-            self.source_combo.clear()
-            for idx in sorted(available):
-                label = f"Camera {idx} — System Camera (Default)" if idx == 0 else f"Camera {idx} — Web Camera (USB)"
-                if idx == active_source:
-                    label += " — In Use"
-                self.source_combo.addItem(label, idx)
-            match_idx = self.source_combo.findData(preferred_source)
-            self.source_combo.setCurrentIndex(match_idx if match_idx >= 0 else 0)
-            self.source_combo.blockSignals(False)
-            self.statusBar().showMessage(
-                "Live feed kept open. Stop Feed before Refresh Cameras to deep-scan devices.",
-                5000,
-            )
-            return
 
         # Avoid piling up scans if the user mashes "Refresh Cameras" —
         # let an in-flight scan finish rather than starting another.
@@ -5744,18 +5703,9 @@ class MainWindow(QtWidgets.QMainWindow):
             else bool(self._compliance_settings.get("enabled", True))
         )
 
-        # Push saved settings from Settings page into the new worker. For the
-        # live monitor, cap capture to HD so the video stays real-time while
-        # AI runs asynchronously; Full HD/4K webcam conversion was causing
-        # visible slow-motion lag on the live feed.
-        req_w = int(getattr(self, "_active_cam_width", 640))
-        req_h = int(getattr(self, "_active_cam_height", 480))
-        if req_w > 1280 or req_h > 720:
-            scale = min(1280 / max(1, req_w), 720 / max(1, req_h))
-            req_w = max(320, int(req_w * scale))
-            req_h = max(240, int(req_h * scale))
-        self.worker.cam_width          = req_w
-        self.worker.cam_height         = req_h
+        # Push saved settings from Settings page into the new worker
+        self.worker.cam_width          = getattr(self, "_active_cam_width",   640)
+        self.worker.cam_height         = getattr(self, "_active_cam_height",  480)
         self.worker.rotation           = getattr(self, "_active_rotation",    0)
         self.worker.confidence_threshold = getattr(self, "_active_confidence", 0.50)
         self.worker.rot_sensitivity    = getattr(self, "_active_sensitivity",  5.0)
@@ -5764,7 +5714,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(
             f"Camera {source} started — operator: {worker_id} | "
             f"{self.worker.cam_width}×{self.worker.cam_height} "
-            f"rot:{self.worker.rotation}° conf:{self.worker.confidence_threshold:.2f} | Fast live"
+            f"rot:{self.worker.rotation}° conf:{self.worker.confidence_threshold:.2f}"
         )
 
 
@@ -5794,12 +5744,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # -- WORKER SLOTS -------------------------------------------------------
     def _on_frame(self, frame) -> None:
-        emitting_worker = self.sender()
-        if emitting_worker is not None and emitting_worker is not self.worker:
-            if hasattr(emitting_worker, "mark_frame_consumed"):
-                emitting_worker.mark_frame_consumed()
-            return
-
         # A real frame arrived, so the current camera is genuinely healthy —
         # clear the auto-recover guard so a future, unrelated failure is
         # free to attempt a fresh fallback instead of being silently skipped.
@@ -5807,15 +5751,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.camera_view.update_frame(frame)
         # Tell the worker this frame is done with so it emits the next one
         # instead of piling more frames into the queue while we're behind.
-        worker = emitting_worker if emitting_worker is not None else self.worker
-        if worker is not None and hasattr(worker, "mark_frame_consumed"):
-            worker.mark_frame_consumed()
+        if self.worker is not None:
+            self.worker.mark_frame_consumed()
 
     def _on_compliance(self, state: dict) -> None:
-        emitting_worker = self.sender()
-        if emitting_worker is not None and emitting_worker is not self.worker:
-            return
-
         self.last_compliance_state = state
         if hasattr(self, "compliance_panel"):
             self.compliance_panel.update_state(state)
@@ -5831,86 +5770,56 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
 
     def _on_state(self, state: dict) -> None:
-        # Snapshot the worker that's current *right now*, at the moment this
-        # signal is handled. If a stale CameraWorker emits after a camera
-        # switch/restart, ignore the payload but still release that worker's
-        # pending flag so old signals never overwrite or stop the active feed.
-        worker = self.sender()
-        if worker is not None and worker is not self.worker:
-            if hasattr(worker, "mark_state_consumed"):
-                worker.mark_state_consumed()
-            return
-        if worker is None:
-            worker = self.worker
-        try:
-            # Merge compliance info if available
-            if hasattr(self, "last_compliance_state") and self.last_compliance_state:
-                state["compliance_details"] = self.last_compliance_state
+        # Merge compliance info if available
+        if hasattr(self, "last_compliance_state") and self.last_compliance_state:
+            state["compliance_details"] = self.last_compliance_state
+            
+        # Update live status and SOP sequences
+        self.status_panel.update_state(state)
+        is_screw_active = self.sop_panel.update_state(state)
+        if hasattr(self, "worker") and self.worker is not None and getattr(self.worker, "_monitor", None) is not None:
+            self.worker._monitor.show_screw_target = is_screw_active
+        
+        # Auto-update Parts Checklist based on live status
+        glove = state.get("glove", "Normal")
+        turns = state.get("rotation_count", 0.0)
+        target = state.get("turn_target", 2.5)
+        
+        # update ESD glove status in part 1
+        if glove == "Glove":
+            self.checklist_table.item(1, 3).setText("Correct")
+            self.checklist_table.item(1, 3).setForeground(QtGui.QColor("#16a34a"))
+            self.checklist_table.item(1, 4).setText(_now_short())
+        else:
+            self.checklist_table.item(1, 3).setText("Not Correct")
+            self.checklist_table.item(1, 3).setForeground(QtGui.QColor("#dc2626"))
+            
+        # update Screw Fastener status in part 0
+        if turns >= target:
+            self.checklist_table.item(0, 3).setText("Correct")
+            self.checklist_table.item(0, 3).setForeground(QtGui.QColor("#16a34a"))
+            self.checklist_table.item(0, 4).setText(_now_short())
+        elif turns > 0:
+            self.checklist_table.item(0, 3).setText(f"In-Progress ({turns:.1f} turns)")
+            self.checklist_table.item(0, 3).setForeground(QtGui.QColor("#d97706"))
+            
+        if state.get("card_visible") and not getattr(self, "_card_notified", False):
+            self._card_notified = True
+            self.statusBar().showMessage("Assembly step completed. screenshot taken and logged.", 8000)
+            self.log_panel.refresh()
+            self._refresh_history_table()
+        elif not state.get("card_visible"):
+            self._card_notified = False
 
-            # Update live status and SOP sequences
-            self.status_panel.update_state(state)
-            is_screw_active = self.sop_panel.update_state(state)
-            if hasattr(self, "worker") and self.worker is not None and getattr(self.worker, "_monitor", None) is not None:
-                self.worker._monitor.show_screw_target = is_screw_active
-
-            # Auto-update Parts Checklist based on live status
-            glove = state.get("glove", "Normal")
-            turns = state.get("rotation_count", 0.0)
-            target = state.get("turn_target", 2.5)
-
-            # update ESD glove status in part 1
-            if glove == "Glove":
-                self.checklist_table.item(1, 3).setText("Correct")
-                self.checklist_table.item(1, 3).setForeground(QtGui.QColor("#16a34a"))
-                self.checklist_table.item(1, 4).setText(_now_short())
-            else:
-                self.checklist_table.item(1, 3).setText("Not Correct")
-                self.checklist_table.item(1, 3).setForeground(QtGui.QColor("#dc2626"))
-
-            # update Screw Fastener status in part 0
-            if turns >= target:
-                self.checklist_table.item(0, 3).setText("Correct")
-                self.checklist_table.item(0, 3).setForeground(QtGui.QColor("#16a34a"))
-                self.checklist_table.item(0, 4).setText(_now_short())
-            elif turns > 0:
-                self.checklist_table.item(0, 3).setText(f"In-Progress ({turns:.1f} turns)")
-                self.checklist_table.item(0, 3).setForeground(QtGui.QColor("#d97706"))
-
-            if state.get("card_visible") and not getattr(self, "_card_notified", False):
-                self._card_notified = True
-                self.statusBar().showMessage("Assembly step completed. screenshot taken and logged.", 8000)
-                self.log_panel.refresh()
-                self._refresh_history_table()
-            elif not state.get("card_visible"):
-                self._card_notified = False
-        except Exception as exc:
-            # A failure anywhere above used to skip mark_state_consumed()
-            # entirely, permanently latching the worker's _state_pending
-            # flag to True. Once that happens the worker never emits
-            # another state_ready signal for the rest of the session, so
-            # the "Live Detection Status" panel freezes at whatever it last
-            # showed (often its untouched startup defaults) even though
-            # the video feed keeps running fine. Catching here means one
-            # bad frame's state degrades gracefully instead of permanently
-            # breaking the live panel.
-            self.statusBar().showMessage(f"State update error: {exc}", 5000)
-        finally:
-            # Tell the worker we're done with this state snapshot so it can
-            # emit the next one instead of queuing more while we're behind.
-            # This now ALWAYS runs, success or failure, which is what keeps
-            # the state_ready -> _on_state -> mark_state_consumed() loop
-            # alive no matter what happens in between.
-            if worker is not None:
-                worker.mark_state_consumed()
+        # Tell the worker we're done with this state snapshot so it can
+        # emit the next one instead of queuing more while we're behind.
+        if self.worker is not None:
+            self.worker.mark_state_consumed()
 
     def _on_gesture(self, gesture: str, conf: float, handed: str) -> None:
         pass
 
     def _on_error(self, message: str) -> None:
-        emitting_worker = self.sender()
-        if emitting_worker is not None and emitting_worker is not self.worker:
-            return
-
         self.statusBar().showMessage(f"Critical Error: {message}", 8000)
         self.camera_view.show_placeholder(message)
 
@@ -5922,10 +5831,6 @@ class MainWindow(QtWidgets.QMainWindow):
         System Camera at index 0) so the feed keeps running. Only shows an
         error dialog when there is truly nothing available, or when the
         automatic fallback has already been tried once for this failure."""
-        emitting_worker = self.sender()
-        if emitting_worker is not None and emitting_worker is not self.worker:
-            return
-
         self._stop_worker()
         self._refresh_camera_list()
 
@@ -5943,13 +5848,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"Camera {requested_source} unavailable — "
                 f"switching to camera {fallback}...", 4000
             )
-            self.source = fallback
             self.source_combo.blockSignals(True)
             match_idx = self.source_combo.findData(fallback)
-            if match_idx < 0:
-                label = f"Camera {fallback} — System Camera (Default)" if fallback == 0 else f"Camera {fallback} — Web Camera (USB)"
-                self.source_combo.addItem(label, fallback)
-                match_idx = self.source_combo.findData(fallback)
             if match_idx >= 0:
                 self.source_combo.setCurrentIndex(match_idx)
             self.source_combo.blockSignals(False)

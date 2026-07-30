@@ -249,16 +249,6 @@ class CameraWorker(QtCore.QThread):
 
         self._cap = _open_capture(self.source)
         if self._cap is None or not self._cap.isOpened():
-            # A previous worker's camera handle can take the OS/driver a
-            # moment longer than our grace delay to fully release —
-            # especially right after a camera switch — which otherwise
-            # shows up here as a false "camera not working" report even
-            # though the device is perfectly valid. One extra attempt after
-            # a short pause catches that window without meaningfully
-            # delaying a genuinely unavailable camera.
-            time.sleep(0.5)
-            self._cap = _open_capture(self.source)
-        if self._cap is None or not self._cap.isOpened():
             available = list_available_cameras()
             if available:
                 msg = (

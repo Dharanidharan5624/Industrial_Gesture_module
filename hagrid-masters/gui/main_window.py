@@ -143,10 +143,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.source = source
         self.worker: Optional[CameraWorker] = None
         self.default_worker_id = "EMP001"
-        # Guards a single automatic fallback attempt when the requested
-        # camera turns out to be unavailable (see _on_camera_unavailable).
-        # Set here, before any UI/signals exist, so it's never read unset.
-        self._camera_autorecover_attempted = False
 
         # Initialize assembly manager and resolve active assembly
         self._assembly_manager = AssemblyManager()
@@ -202,12 +198,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Defer camera start until camera scan completes — scan is async so
         # source_combo is empty if we call _start_worker() immediately here.
-        # The camera must initialize on launch with the System Camera
-        # regardless of assembly hold/active state — hold state only gates
-        # the SOP monitoring logic, it must never prevent the live camera
-        # feed itself from starting.
-        self._auto_start_on_scan = True
-        if not self._assembly_manager.is_active_assembly():
+        self._auto_start_on_scan = self._assembly_manager.is_active_assembly()
+        if not self._auto_start_on_scan:
             self._set_hold_state("Active assembly is currently in Hold state.")
 
     def _load_active_settings_early(self) -> None:
@@ -1553,21 +1545,17 @@ class MainWindow(QtWidgets.QMainWindow):
         card_layout.setSpacing(12)
 
         # ── Top row: active badge (no icon — emoji renders as broken box) ────
-        # Always built (not just when initially active) so the indicator can
-        # be shown/hidden dynamically as the active assembly changes later —
-        # see _refresh_assembly_management_page(), which is what keeps this
-        # in sync in real time without rebuilding the whole card grid.
         top_row = QtWidgets.QHBoxLayout()
         top_row.addStretch(1)
 
-        active_lbl = QtWidgets.QLabel("● ACTIVE")
-        active_lbl.setStyleSheet(
-            "color: #15803d; font-size: 11px; font-weight: 800; "
-            "background-color: #dcfce7; border-radius: 8px; padding: 2px 10px; "
-            "border: 1px solid #86efac;"
-        )
-        active_lbl.setVisible(active)
-        top_row.addWidget(active_lbl)
+        if active:
+            active_lbl = QtWidgets.QLabel("● ACTIVE")
+            active_lbl.setStyleSheet(
+                "color: #15803d; font-size: 11px; font-weight: 800; "
+                "background-color: #dcfce7; border-radius: 8px; padding: 2px 10px; "
+                "border: 1px solid #86efac;"
+            )
+            top_row.addWidget(active_lbl)
         card_layout.addLayout(top_row)
 
         # ── Assembly name ────────────────────────────────────────────────────
@@ -1609,10 +1597,9 @@ class MainWindow(QtWidgets.QMainWindow):
         btn.clicked.connect(lambda _=False, aid=assembly_id: self._set_active_assembly(aid))
         card_layout.addWidget(btn)
 
-        # Store widget references for refresh
+        # Store the button reference for refresh
         card._activate_btn = btn
         card._name_lbl = name_lbl
-        card._active_pill = active_lbl
 
         return card
 
@@ -1655,26 +1642,6 @@ class MainWindow(QtWidgets.QMainWindow):
         for aid, card in self.am_card_widgets.items():
             card_is_active = (aid == active_id) and is_active_sys
             self._style_assembly_card(card, card_is_active)
-
-            # Move the green "● ACTIVE" indicator to the current position —
-            # this is the piece that previously only got set once at card
-            # construction and never followed later assembly switches.
-            if hasattr(card, "_active_pill"):
-                pill = card._active_pill
-                was_visible = pill.isVisible()
-                pill.setVisible(card_is_active)
-                if card_is_active and not was_visible:
-                    # Smooth fade-in so the indicator's arrival at its new
-                    # position reads as a transition, not an abrupt snap.
-                    effect = QtWidgets.QGraphicsOpacityEffect(pill)
-                    pill.setGraphicsEffect(effect)
-                    anim = QtCore.QPropertyAnimation(effect, b"opacity", pill)
-                    anim.setDuration(280)
-                    anim.setStartValue(0.0)
-                    anim.setEndValue(1.0)
-                    anim.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
-                    card._active_pill_anim = anim  # keep a reference alive
-
             if hasattr(card, "_activate_btn"):
                 btn = card._activate_btn
                 btn.setEnabled(True)
@@ -1879,15 +1846,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_assembly_management_page()
 
     def _set_hold_state(self, reason: str = "") -> None:
-        """Reflect an inactive/held assembly in the SOP status UI.
-
-        Hold state governs SOP monitoring logic only (see
-        _reload_live_monitor_for_assembly, which disables the "SOP Monitor
-        Logic" checkbox for an inactive assembly) — it must NOT stop the
-        camera. The System Camera has to keep initializing and streaming
-        on launch and during normal use regardless of assembly state, so
-        this no longer touches the worker or the live camera view.
-        """
+        """Place the Live Monitoring system into a Hold state when an assembly is inactive."""
+        self._stop_worker()
+        if hasattr(self, "camera_view") and self.camera_view is not None:
+            self.camera_view.show_placeholder(
+                "HOLD STATE — Assembly Inactive\n\n"
+                "Mark an assembly as Active in Assembly Management to automatically launch live monitoring."
+            )
         if hasattr(self, "sub_title_sop"):
             self.sub_title_sop.setText(
                 f"SOP: {getattr(self, 'active_sop_name', 'None')} | Status: HOLD (Assembly Inactive)"
@@ -1903,12 +1868,6 @@ class MainWindow(QtWidgets.QMainWindow):
         """Deactivate an assembly, setting the Live Monitoring module into Hold state."""
         self._assembly_manager.deactivate_assembly(assembly_id)
         self._refresh_assembly_management_page()
-        # Keep Live Monitor's SOP title and "SOP Monitor Logic" checkbox in
-        # sync with the hold change too — previously only _set_hold_state's
-        # status-bar/subtitle text updated here, while the checkbox enable
-        # state (handled in _reload_live_monitor_for_assembly) was left stale
-        # until the next unrelated assembly switch.
-        self._reload_live_monitor_for_assembly()
         self._set_hold_state(f"Assembly '{assembly_id}' set to Hold state.")
 
     def _set_active_assembly(self, assembly_id: str) -> None:
@@ -1940,14 +1899,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage(
                 f"Active assembly set to: {self.active_sop_name} | Live Monitoring auto-started", 5000
             )
+            # Automatic camera & SOP workflow activation without manual intervention
+            self._start_worker()
         else:
             self._set_hold_state(f"Assembly '{self.active_sop_name}' is inactive.")
-        # The camera itself always restarts here regardless of the
-        # assembly's active/hold status — only the "SOP Monitor Logic"
-        # checkbox (handled in _reload_live_monitor_for_assembly) reflects
-        # hold state. The live feed must never be left stopped after an
-        # assembly switch.
-        self._start_worker()
 
     def _reload_live_monitor_for_assembly(self) -> None:
         """Rebuild the Live Monitor header and SOP panel for the active assembly."""
@@ -2289,7 +2244,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "Index 0 is the system's default/built-in camera. "
             "1, 2, ... are external USB/webcams, if connected."
         )
-        self.source_combo.currentIndexChanged.connect(self._on_camera_combo_changed)
         controls_layout.addWidget(self.source_combo)
 
         self.select_cam_btn = QtWidgets.QPushButton("Select Camera")
@@ -5532,7 +5486,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.source_combo.addItem("No cameras detected", -1)
         else:
             for idx in available:
-                label = f"Camera {idx} — System Camera (Default)" if idx == 0 else f"Camera {idx} — Web Camera (USB)"
+                label = f"Camera {idx} (Built-in / Default)" if idx == 0 else f"Camera {idx} (External USB)"
                 if idx == active_source:
                     label += " — In Use"
                 self.source_combo.addItem(label, idx)
@@ -5563,21 +5517,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 "No cameras were detected. Connect a built-in or USB camera, "
                 "then click 'Refresh Cameras' and try again."
             )
-            return
-        self._start_worker()
-
-    def _on_camera_combo_changed(self, _index: int) -> None:
-        """Seamlessly switch the live feed the moment the user picks a
-        different entry (System Camera vs. Web Camera) from the dropdown,
-        so switching doesn't require a separate button click. This does
-        NOT fire during programmatic repopulation in _on_camera_scan_done
-        (that method wraps its changes in blockSignals), only on genuine
-        user selection."""
-        source = self._current_source()
-        if source == -1:
-            return
-        if self.worker is not None and self.worker.isRunning() and source == self.source:
-            # Already showing this camera — nothing to switch.
             return
         self._start_worker()
 
@@ -5744,10 +5683,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # -- WORKER SLOTS -------------------------------------------------------
     def _on_frame(self, frame) -> None:
-        # A real frame arrived, so the current camera is genuinely healthy —
-        # clear the auto-recover guard so a future, unrelated failure is
-        # free to attempt a fresh fallback instead of being silently skipped.
-        self._camera_autorecover_attempted = False
         self.camera_view.update_frame(frame)
         # Tell the worker this frame is done with so it emits the next one
         # instead of piling more frames into the queue while we're behind.
@@ -5825,36 +5760,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_camera_unavailable(self, requested_source: int, available: list) -> None:
         """The worker couldn't open/keep open the requested camera. Stop it,
-        refresh the picker with whatever cameras ARE usable, and — instead of
-        just reporting an error while a perfectly good camera sits unused —
-        automatically fall back to another working camera (preferring the
-        System Camera at index 0) so the feed keeps running. Only shows an
-        error dialog when there is truly nothing available, or when the
-        automatic fallback has already been tried once for this failure."""
+        refresh the picker with whatever cameras ARE usable, and let the
+        operator choose one instead of leaving them stuck."""
         self._stop_worker()
         self._refresh_camera_list()
-
-        fallback = None
-        if available:
-            fallback = 0 if 0 in available else available[0]
-
-        if (
-            fallback is not None
-            and fallback != requested_source
-            and not self._camera_autorecover_attempted
-        ):
-            self._camera_autorecover_attempted = True
-            self.statusBar().showMessage(
-                f"Camera {requested_source} unavailable — "
-                f"switching to camera {fallback}...", 4000
-            )
-            self.source_combo.blockSignals(True)
-            match_idx = self.source_combo.findData(fallback)
-            if match_idx >= 0:
-                self.source_combo.setCurrentIndex(match_idx)
-            self.source_combo.blockSignals(False)
-            self._start_worker()
-            return
 
         if available:
             options = ", ".join(str(i) for i in available)

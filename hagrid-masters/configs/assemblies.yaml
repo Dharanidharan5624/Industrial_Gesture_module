@@ -2,7 +2,7 @@ assemblies:
 - assembly_id: screw_tightening
   display_name: Industrial Screw-Tightening Assembly
   detection_mode: screw_monitor
-  is_active: false
+  is_active: true
   target_params:
     turn_target: 2.5
     align_threshold_px: 50
